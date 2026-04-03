@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
 faster-whisper
-edge-tts
-deep-translator
+TTS
+httpx
+soundfile
+numpy
 python-multipart

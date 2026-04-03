@@ -3,23 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Live Translation – Listener</title>
+  <title>Live Translation – English</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:        #f4f6fb;
-      --surface:   #ffffff;
-      --border:    #dde1ef;
-      --accent:    #5046e5;
-      --accent-h:  #6c63ff;
-      --danger:    #dc4f4f;
-      --danger-h:  #ef6b6b;
-      --text:      #1a1a2e;
-      --muted:     #6b7280;
-      --green:     #16a34a;
-      --yellow:    #d97706;
-      --red:       #dc2626;
+      --bg:       #f4f6fb;
+      --surface:  #ffffff;
+      --border:   #dde1ef;
+      --accent:   #5046e5;
+      --accent-h: #6c63ff;
+      --danger:   #dc4f4f;
+      --text:     #1a1a2e;
+      --muted:    #6b7280;
+      --green:    #16a34a;
+      --yellow:   #d97706;
+      --red:      #dc2626;
     }
 
     body {
@@ -34,24 +33,32 @@
       padding: 2rem;
     }
 
-    header {
-      text-align: center;
-      margin-bottom: 2.5rem;
-    }
+    header { text-align: center; margin-bottom: 2.5rem; }
+    header h1 { font-size: 1.6rem; font-weight: 700; color: var(--text); }
+    header p  { margin-top: 0.4rem; font-size: 0.85rem; color: var(--muted);
+                letter-spacing: 0.06em; text-transform: uppercase; }
 
-    header h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      color: var(--text);
-    }
-
-    header p {
-      margin-top: 0.4rem;
+    /* ── Language badge ── */
+    .lang-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+      padding: 0.5rem 1.4rem;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
       font-size: 0.85rem;
-      color: var(--muted);
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+
+    .lang-badge svg {
+      width: 16px; height: 16px;
+      fill: none; stroke: var(--accent);
+      stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
     }
 
     /* ── Status badge ── */
@@ -73,8 +80,7 @@
     }
 
     #status-dot {
-      width: 10px;
-      height: 10px;
+      width: 10px; height: 10px;
       border-radius: 50%;
       background: #ccc;
       flex-shrink: 0;
@@ -86,8 +92,7 @@
     #status-dot.error      { background: var(--red); }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.25; }
+      0%, 100% { opacity: 1; } 50% { opacity: 0.25; }
     }
 
     /* ── Card ── */
@@ -98,53 +103,23 @@
       box-shadow: 0 4px 24px rgba(0,0,0,0.07);
       padding: 2.5rem 2rem;
       width: 100%;
-      max-width: 480px;
+      max-width: 440px;
       display: flex;
       flex-direction: column;
       gap: 1.4rem;
     }
 
-    /* ── Form row ── */
-    .field label {
-      display: block;
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      margin-bottom: 0.5rem;
-    }
-
-    #lang-select {
-      width: 100%;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      border: 1.5px solid var(--border);
-      background: var(--bg);
-      color: var(--text);
-      font-size: 0.95rem;
-      appearance: none;
-      cursor: pointer;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    #lang-select:focus { border-color: var(--accent); }
-
     /* ── Buttons ── */
-    .btn-row {
-      display: flex;
-      gap: 0.8rem;
-    }
+    .btn-row { display: flex; gap: 0.8rem; }
 
     #btn-join {
       flex: 1;
-      padding: 0.75rem;
+      padding: 0.85rem;
       border-radius: 8px;
       border: none;
       background: var(--accent);
       color: #fff;
-      font-size: 0.9rem;
+      font-size: 0.95rem;
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
@@ -152,18 +127,18 @@
       transition: background 0.2s, transform 0.1s;
     }
 
-    #btn-join:hover:not(:disabled) { background: var(--accent-h); }
+    #btn-join:hover:not(:disabled)  { background: var(--accent-h); }
     #btn-join:active:not(:disabled) { transform: scale(0.98); }
     #btn-join:disabled { opacity: 0.35; cursor: not-allowed; }
 
     #btn-leave {
       flex: 1;
-      padding: 0.75rem;
+      padding: 0.85rem;
       border-radius: 8px;
       border: 2px solid var(--danger);
       background: transparent;
       color: var(--danger);
-      font-size: 0.9rem;
+      font-size: 0.95rem;
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
@@ -184,23 +159,12 @@
       color: var(--muted);
       line-height: 1.6;
       min-height: 64px;
-      display: flex;
-      flex-direction: column;
-      gap: 0.3rem;
     }
 
-    #info-box strong {
-      color: var(--text);
-      font-weight: 600;
-    }
+    #info-box strong { color: var(--text); font-weight: 600; }
 
-    /* ── Audio visualiser (simple level bar) ── */
-    #visualiser-wrap {
-      display: none;
-      flex-direction: column;
-      gap: 0.4rem;
-    }
-
+    /* ── Visualiser ── */
+    #visualiser-wrap { display: none; flex-direction: column; gap: 0.4rem; }
     #visualiser-wrap.visible { display: flex; }
 
     .vis-label {
@@ -237,8 +201,18 @@
 
   <header>
     <h1>Live Translation</h1>
-    <p>Choose your language and listen</p>
+    <p>Russian sermon &rarr; English</p>
   </header>
+
+  <!-- Static language indicator – English only -->
+  <div class="lang-badge">
+    <svg viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10
+               15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+    </svg>
+    English
+  </div>
 
   <div id="status-wrap">
     <div id="status-dot"></div>
@@ -246,28 +220,14 @@
   </div>
 
   <div class="card">
-
-    <div class="field">
-      <label for="lang-select">Preferred language</label>
-      <select id="lang-select">
-        <option value="en">English</option>
-        <option value="es">Spanish</option>
-        <option value="fr">French</option>
-        <option value="pt">Portuguese</option>
-        <option value="zh">Chinese</option>
-        <option value="ko">Korean</option>
-        <option value="ru">Russian</option>
-        <option value="ar">Arabic</option>
-      </select>
-    </div>
-
     <div class="btn-row">
       <button id="btn-join">Join</button>
       <button id="btn-leave" disabled>Leave</button>
     </div>
 
     <div id="info-box">
-      Select a language and press <strong>Join</strong> to start listening.
+      Press <strong>Join</strong> to start listening to the English translation.
+      Audio plays automatically as the sermon is translated in the preacher's voice.
     </div>
 
     <div id="visualiser-wrap">
@@ -275,12 +235,10 @@
       <div id="vis-bar-track"><div id="vis-bar-fill"></div></div>
       <span id="chunk-counter">0 segments received</span>
     </div>
-
   </div>
 
   <script>
     // ── DOM refs ─────────────────────────────────────────────────────────────
-    const langSelect     = document.getElementById('lang-select');
     const btnJoin        = document.getElementById('btn-join');
     const btnLeave       = document.getElementById('btn-leave');
     const statusDot      = document.getElementById('status-dot');
@@ -291,37 +249,29 @@
     const chunkCounter   = document.getElementById('chunk-counter');
 
     // ── State ────────────────────────────────────────────────────────────────
-    let ws              = null;
-    let audioCtx        = null;
-
-    // Time (in AudioContext seconds) at which the NEXT scheduled chunk should
-    // start playing.  Keeps playback gapless even when chunks arrive in bursts.
+    let ws               = null;
+    let audioCtx         = null;
     let scheduledEndTime = 0;
-
-    // Counter for the visualiser.
-    let chunksReceived  = 0;
+    let chunksReceived   = 0;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
     function setStatus(state, label) {
-      statusDot.className   = state;   // '', 'connecting', 'listening', 'error'
+      statusDot.className    = state;
       statusText.textContent = label;
     }
 
-    function setInfo(html) {
-      infoBox.innerHTML = html;
-    }
+    function setInfo(html) { infoBox.innerHTML = html; }
 
     function wsUrl(path) {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
       return `${scheme}://${location.host}${path}`;
     }
 
-    // ── Gapless audio queue ──────────────────────────────────────────────────
-    /**
-     * Decode an MP3 ArrayBuffer and schedule it for playback immediately
-     * after the previously queued chunk.  Uses AudioContext.currentTime
-     * as the floor so a long silence gap doesn't delay the next sentence.
-     */
+    // ── Gapless audio playback ────────────────────────────────────────────────
+    // Each incoming binary message is a complete MP3 segment.
+    // We decode it and schedule it to start exactly when the previous one ends,
+    // using AudioContext time as a monotonic clock.  This keeps the translated
+    // speech gapless even when segments arrive in bursts.
     async function scheduleAudioChunk(arrayBuffer) {
       let audioBuffer;
       try {
@@ -335,48 +285,44 @@
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
 
-      // Start at whichever is later: "right now + tiny buffer" or the
-      // end of the previously scheduled chunk.  This keeps chunks seamless
-      // while also recovering gracefully from processing delays.
+      // If the previous chunk has already finished playing (or this is the
+      // first chunk), start immediately with a tiny safety buffer (50 ms).
       const startTime = Math.max(audioCtx.currentTime + 0.05, scheduledEndTime);
       source.start(startTime);
-
-      // Track where this chunk ends so the next one can follow without a gap.
       scheduledEndTime = startTime + audioBuffer.duration;
     }
 
-    // Brief flash of the visualiser bar to indicate a received chunk.
     function flashVisualiser() {
       chunksReceived++;
-      chunkCounter.textContent = `${chunksReceived} segment${chunksReceived !== 1 ? 's' : ''} received`;
+      chunkCounter.textContent =
+        `${chunksReceived} segment${chunksReceived !== 1 ? 's' : ''} received`;
       visBarFill.style.width = '100%';
       setTimeout(() => { visBarFill.style.width = '0%'; }, 300);
     }
 
-    // ── Join ─────────────────────────────────────────────────────────────────
+    // ── Join ──────────────────────────────────────────────────────────────────
     btnJoin.addEventListener('click', () => {
       if (ws) return;
 
-      const lang     = langSelect.value;
-      const langName = langSelect.options[langSelect.selectedIndex].text;
-
       setStatus('connecting', 'Connecting…');
-      btnJoin.disabled  = true;
-      langSelect.disabled = true;
+      btnJoin.disabled = true;
 
-      // Create the AudioContext on a user-gesture so browsers allow playback.
+      // AudioContext must be created inside a user-gesture handler (browser policy).
       audioCtx         = new AudioContext();
       scheduledEndTime = 0;
       chunksReceived   = 0;
       chunkCounter.textContent = '0 segments received';
 
-      ws = new WebSocket(wsUrl(`/ws/listen/${lang}`));
+      // Always connect to the English channel.
+      ws = new WebSocket(wsUrl('/ws/listen/en'));
       ws.binaryType = 'arraybuffer';
 
       ws.addEventListener('open', () => {
-        setStatus('listening', `Listening · ${langName}`);
-        setInfo(`<strong>Connected</strong> — listening in <strong>${langName}</strong>.<br>
-                 Audio will play automatically as the speaker is translated.`);
+        setStatus('listening', 'Listening · English');
+        setInfo(
+          `<strong>Connected</strong> — listening to the English translation.<br>
+           Audio plays automatically each time a sermon segment is translated.`
+        );
         btnLeave.disabled = false;
         visualiserWrap.classList.add('visible');
       });
@@ -392,7 +338,7 @@
       ws.addEventListener('close', () => {
         if (statusDot.className === 'listening') {
           setStatus('', 'Disconnected');
-          setInfo('Connection closed by server.');
+          setInfo('Connection closed. Press Join to reconnect.');
         }
         cleanup();
       });
@@ -408,30 +354,21 @@
     btnLeave.addEventListener('click', () => {
       setStatus('', 'Disconnecting…');
       cleanup();
-      setInfo('You have left the session. Select a language to rejoin.');
+      setInfo('You have left the session. Press Join to rejoin.');
     });
 
     function cleanup() {
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close();
-      }
+      if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
       ws = null;
 
-      if (audioCtx) {
-        audioCtx.close().catch(() => {});
-        audioCtx = null;
-      }
-
+      if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
       scheduledEndTime = 0;
 
-      btnJoin.disabled    = false;
-      btnLeave.disabled   = true;
-      langSelect.disabled = false;
+      btnJoin.disabled  = false;
+      btnLeave.disabled = true;
       visualiserWrap.classList.remove('visible');
 
-      if (statusDot.className !== 'error') {
-        setStatus('', 'Not connected');
-      }
+      if (statusDot.className !== 'error') setStatus('', 'Not connected');
     }
   </script>
 </body>

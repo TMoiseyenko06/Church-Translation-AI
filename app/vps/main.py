@@ -47,17 +47,11 @@ logger = logging.getLogger("vps-relay")
 # WebSocket URL of the Vast AI worker, e.g. ws://12.34.56.78:8001/ws/worker
 VAST_WS_URL: str = os.environ.get("VAST_WS_URL", "ws://localhost:8001/ws/worker")
 
-# ─── Language configuration (mirrors the Vast worker) ────────────────────────
+# ─── Language configuration ───────────────────────────────────────────────────
+# The Vast worker translates Russian sermon audio to English only.
 
 SUPPORTED_LANGUAGES: Dict[str, str] = {
     "en": "English",
-    "es": "Spanish",
-    "fr": "French",
-    "pt": "Portuguese",
-    "zh": "Chinese",
-    "ko": "Korean",
-    "ru": "Russian",
-    "ar": "Arabic",
 }
 
 # ─── Global state ─────────────────────────────────────────────────────────────
