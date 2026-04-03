@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Translation Booth</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f0f1a;
+      --surface:   #1a1a2e;
+      --border:    #2a2a4a;
+      --accent:    #6c63ff;
+      --accent-h:  #8b85ff;
+      --danger:    #e05c5c;
+      --danger-h:  #ef7171;
+      --text:      #e8e8f0;
+      --muted:     #888aaa;
+      --green:     #4caf7d;
+      --yellow:    #f0c040;
+      --red:       #e05c5c;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    header h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+
+    header p {
+      margin-top: 0.4rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    /* ── Status badge ── */
+    #status-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 2rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    #status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+
+    #status-dot.connecting { background: var(--yellow); animation: pulse 1.2s infinite; }
+    #status-dot.live       { background: var(--green);  animation: pulse 1.2s infinite; }
+    #status-dot.error      { background: var(--red); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── Main card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2.5rem 2rem;
+      width: 100%;
+      max-width: 540px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.8rem;
+    }
+
+    /* ── Go Live button ── */
+    #btn-go-live {
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      border: 3px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, box-shadow 0.2s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #btn-go-live:hover:not(:disabled) {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 0 32px rgba(108, 99, 255, 0.5);
+    }
+
+    #btn-go-live:active:not(:disabled) { transform: scale(0.97); }
+    #btn-go-live:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    #btn-go-live.recording {
+      border-color: var(--green);
+      color: var(--green);
+      box-shadow: 0 0 24px rgba(76, 175, 125, 0.3);
+    }
+
+    #btn-go-live.recording:hover:not(:disabled) {
+      background: var(--green);
+      color: #fff;
+      box-shadow: 0 0 32px rgba(76, 175, 125, 0.5);
+    }
+
+    /* ── Stop button ── */
+    #btn-stop {
+      padding: 0.65rem 2.2rem;
+      border-radius: 8px;
+      border: 2px solid var(--danger);
+      background: transparent;
+      color: var(--danger);
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    #btn-stop:hover:not(:disabled) { background: var(--danger); color: #fff; }
+    #btn-stop:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* ── Transcript area ── */
+    .transcript-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      align-self: flex-start;
+    }
+
+    #transcript-box {
+      width: 100%;
+      min-height: 120px;
+      max-height: 240px;
+      overflow-y: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    #transcript-box:empty::before {
+      content: 'Transcription will appear here…';
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    /* ── Language tag ── */
+    #lang-tag {
+      font-size: 0.75rem;
+      color: var(--muted);
+      align-self: flex-end;
+    }
+
+    #lang-tag span {
+      background: var(--border);
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      color: var(--accent-h);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Translation Booth</h1>
+    <p>Live Speech Capture</p>
+  </header>
+
+  <div id="status-wrap">
+    <div id="status-dot"></div>
+    <span id="status-text">Idle</span>
+  </div>
+
+  <div class="card">
+    <button id="btn-go-live">GO LIVE</button>
+    <button id="btn-stop" disabled>Stop Session</button>
+
+    <span class="transcript-label">Live Transcript</span>
+    <div id="transcript-box"></div>
+    <div id="lang-tag" style="display:none">Detected language: <span id="lang-code"></span></div>
+  </div>
+
+  <script>
+    // ── DOM refs ────────────────────────────────────────────────────────────
+    const btnGoLive      = document.getElementById('btn-go-live');
+    const btnStop        = document.getElementById('btn-stop');
+    const statusDot      = document.getElementById('status-dot');
+    const statusText     = document.getElementById('status-text');
+    const transcriptBox  = document.getElementById('transcript-box');
+    const langTag        = document.getElementById('lang-tag');
+    const langCode       = document.getElementById('lang-code');
+
+    // ── State ───────────────────────────────────────────────────────────────
+    let ws             = null;
+    let mediaRecorder  = null;
+    let stream         = null;
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    function setStatus(state, label) {
+      statusDot.className  = state;   // '', 'connecting', 'live', 'error'
+      statusText.textContent = label;
+    }
+
+    function appendTranscript(text) {
+      transcriptBox.textContent += (transcriptBox.textContent ? '\n' : '') + text;
+      transcriptBox.scrollTop = transcriptBox.scrollHeight;
+    }
+
+    // Determine the correct WebSocket scheme based on page protocol.
+    function wsUrl(path) {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${scheme}://${location.host}${path}`;
+    }
+
+    // ── Go Live ──────────────────────────────────────────────────────────────
+    btnGoLive.addEventListener('click', async () => {
+      if (ws) return; // already running
+
+      setStatus('connecting', 'Requesting microphone…');
+      btnGoLive.disabled = true;
+
+      try {
+        // Request mic access.
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        setStatus('error', 'Mic access denied');
+        btnGoLive.disabled = false;
+        console.error('getUserMedia error:', err);
+        return;
+      }
+
+      // Open the WebSocket connection to the booth endpoint.
+      setStatus('connecting', 'Connecting…');
+      ws = new WebSocket(wsUrl('/ws/booth'));
+      ws.binaryType = 'arraybuffer';
+
+      ws.addEventListener('open', () => {
+        setStatus('live', 'LIVE');
+        btnGoLive.classList.add('recording');
+        btnStop.disabled = false;
+        startRecording();
+      });
+
+      ws.addEventListener('message', (event) => {
+        // Server echoes transcription results as JSON text messages.
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.transcript) {
+            appendTranscript(msg.transcript);
+            if (msg.language) {
+              langTag.style.display = '';
+              langCode.textContent  = msg.language.toUpperCase();
+            }
+          } else if (msg.error) {
+            console.warn('Server error:', msg.error);
+          }
+        } catch {
+          console.warn('Non-JSON message from server:', event.data);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        if (statusDot.className === 'live') {
+          setStatus('', 'Session ended');
+        }
+        cleanup();
+      });
+
+      ws.addEventListener('error', () => {
+        setStatus('error', 'Connection error');
+        cleanup();
+      });
+    });
+
+    // ── Recording ─────────────────────────────────────────────────────────────
+    function startRecording() {
+      // Prefer the opus codec inside a WebM container for smallest payload.
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : '';
+
+      const options = mimeType ? { mimeType } : {};
+      mediaRecorder = new MediaRecorder(stream, options);
+
+      // ondataavailable fires every 4 seconds (timeslice=4000).
+      // Each Blob is sent as binary data over the WebSocket.
+      mediaRecorder.addEventListener('dataavailable', async (event) => {
+        if (event.data && event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+          // Convert Blob → ArrayBuffer and send as binary frame.
+          const buffer = await event.data.arrayBuffer();
+          ws.send(buffer);
+        }
+      });
+
+      // timeslice=4000 → server receives a ~4-second audio segment every 4 s.
+      mediaRecorder.start(4000);
+    }
+
+    // ── Stop ──────────────────────────────────────────────────────────────────
+    btnStop.addEventListener('click', () => {
+      setStatus('', 'Stopping…');
+      cleanup();
+    });
+
+    function cleanup() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      mediaRecorder = null;
+
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+
+      if (ws && ws.readyState !== WebSocket.CLOSED) {
+        ws.close();
+      }
+      ws = null;
+
+      btnGoLive.disabled = false;
+      btnGoLive.classList.remove('recording');
+      btnStop.disabled = true;
+
+      if (statusDot.className !== 'error') {
+        setStatus('', 'Idle');
+      }
+    }
+  </script>
+</body>
+</html>
