@@ -6,18 +6,40 @@
 #   chmod +x start.sh && ./start.sh
 #
 # What this script does:
-#   1. Verifies Ollama is running and the model is pulled
-#   2. Starts the FastAPI worker on port 8001
+#   1. Activates the "church" conda environment (Python 3.11)
+#   2. Verifies Ollama is running and the model is pulled
+#   3. Starts the FastAPI worker on port 8001
 #
-# Prerequisites (run once before first start — see full instructions):
-#   • CUDA driver + CUDA toolkit installed
-#   • PyTorch (CUDA build) installed
-#   • pip install -r requirements.txt
-#   • Ollama installed + qwen2.5:7b pulled
-#   • ffmpeg on PATH
+# One-time setup (run once before first start):
+#   wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+#   bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
+#   source $HOME/miniconda3/etc/profile.d/conda.sh
+#   conda create -n church python=3.11 -y
+#   conda activate church
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+#   ollama pull qwen2.5:14b
+#   • ffmpeg on PATH:  sudo apt install -y ffmpeg
 #   • Port 8001 open in Vast instance TCP port settings
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+# ── 0. Activate conda environment ────────────────────────────────────────────
+CONDA_ENV="${CONDA_ENV:-church}"
+MINICONDA_PATH="${MINICONDA_PATH:-$HOME/miniconda3}"
+
+if [ -f "${MINICONDA_PATH}/etc/profile.d/conda.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${MINICONDA_PATH}/etc/profile.d/conda.sh"
+  conda activate "${CONDA_ENV}"
+  echo "  Activated conda env: ${CONDA_ENV} ($(python --version))"
+else
+  echo ""
+  echo "  WARNING: conda not found at ${MINICONDA_PATH}."
+  echo "  Continuing with system Python — install may fail if not Python 3.11."
+  echo "  Set MINICONDA_PATH if conda is installed elsewhere."
+  echo ""
+fi
 
 PORT=8001
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
