@@ -81,4 +81,4 @@ echo ""
 # ── 3. Start the FastAPI worker ───────────────────────────────────────────────
 OLLAMA_URL="${OLLAMA_URL}" \
 OLLAMA_MODEL="${OLLAMA_MODEL}" \
-  uvicorn worker:app --host 0.0.0.0 --port "${PORT}" --reload false
+  uvicorn worker:app --host 0.0.0.0 --port "${PORT}"
