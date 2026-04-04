@@ -188,6 +188,7 @@ def translate_sync(text: str, detected_lang: str) -> str:
             forced_bos_token_id=tgt_lang_id,
             max_new_tokens=256,
             num_beams=4,
+            max_length=None,
         )
 
     return nllb_tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()  # type: ignore[operator]
