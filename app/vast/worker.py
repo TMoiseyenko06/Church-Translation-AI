@@ -50,7 +50,7 @@ logger = logging.getLogger("vast-worker")
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 OLLAMA_URL: str   = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:32b")
 
 # Microsoft neural male voice for English output.
 # Alternatives: en-US-GuyNeural, en-US-EricNeural, en-GB-RyanNeural
