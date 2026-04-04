@@ -54,8 +54,29 @@ _torch.load = _patched_torch_load
 
 # Accept Coqui TOS non-interactively (required before importing TTS).
 # XTTS v2 is released under the Coqui Public Model License (non-commercial).
+# Accept Coqui TOS non-interactively (required before importing TTS).
+# XTTS v2 is released under the Coqui Public Model License (non-commercial).
 os.environ["COQUI_TOS_AGREED"] = "1"
 from TTS.api import TTS  # noqa: E402  (must come after env var and patch)
+
+# ── XTTS audio loader patch ───────────────────────────────────────────────────
+# Newer Coqui TTS versions use torchcodec for audio loading inside
+# get_conditioning_latents(), but torchcodec is not available in all
+# environments. Replace the loader with a torchaudio-based equivalent —
+# torchaudio ships with PyTorch so it is always available.
+import torchaudio as _torchaudio
+import TTS.tts.layers.xtts.tokenizer as _xtts_tokenizer
+
+def _load_audio_torchaudio(audiopath, sampling_rate):
+    audio, sr = _torchaudio.load(audiopath)
+    if sr != sampling_rate:
+        audio = _torchaudio.transforms.Resample(sr, sampling_rate)(audio)
+    if audio.shape[0] > 1:
+        audio = audio.mean(0, keepdim=True)  # mix down to mono
+    return audio.squeeze()
+
+_xtts_tokenizer.load_audio = _load_audio_torchaudio
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
