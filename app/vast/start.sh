@@ -7,8 +7,9 @@
 #
 # What this script does:
 #   1. Activates the "church" conda environment (Python 3.11)
-#   2. Verifies Ollama is running and the model is pulled
-#   3. Starts the FastAPI worker on port 8001
+#   2. Starts Ollama in the background if not already running
+#   3. Pulls the model if not already downloaded
+#   4. Starts the FastAPI worker on port 8001
 #
 # One-time setup (run once before first start):
 #   wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
@@ -18,13 +19,12 @@
 #   conda activate church
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 #   pip install -r requirements.txt
-#   ollama pull qwen2.5:14b
 #   • ffmpeg on PATH:  sudo apt install -y ffmpeg
 #   • Port 8001 open in Vast instance TCP port settings
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── 0. Activate conda environment ────────────────────────────────────────────
+# ── 0. Activate conda environment ─────────────────────────────────────────────
 CONDA_ENV="${CONDA_ENV:-church}"
 MINICONDA_PATH="${MINICONDA_PATH:-$HOME/miniconda3}"
 
@@ -44,28 +44,41 @@ fi
 PORT=8001
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+OLLAMA_LOG="/tmp/ollama-church.log"
 
-# ── 1. Check Ollama is reachable ──────────────────────────────────────────────
+# ── 1. Start Ollama if not already running ────────────────────────────────────
 echo ""
-echo "  Checking Ollama …"
-if ! curl -sf "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; then
-  echo ""
-  echo "  ERROR: Ollama is not running."
-  echo "  Start it in a separate terminal with:  ollama serve"
-  echo "  Then pull the model with:              ollama pull ${OLLAMA_MODEL}"
-  echo ""
-  exit 1
+if curl -sf "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; then
+  echo "  Ollama already running."
+else
+  echo "  Starting Ollama in background …"
+  nohup ollama serve >"${OLLAMA_LOG}" 2>&1 &
+  OLLAMA_PID=$!
+  echo "  Ollama PID: ${OLLAMA_PID} (logs: ${OLLAMA_LOG})"
+
+  # Wait up to 15 seconds for Ollama to become ready.
+  for i in $(seq 1 15); do
+    if curl -sf "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; then
+      echo "  Ollama ready."
+      break
+    fi
+    if [ "$i" -eq 15 ]; then
+      echo "  ERROR: Ollama did not start in time. Check ${OLLAMA_LOG}"
+      exit 1
+    fi
+    sleep 1
+  done
 fi
 
-# Check the model exists locally.
+# ── 2. Pull model if not already downloaded ───────────────────────────────────
 if ! curl -sf "${OLLAMA_URL}/api/tags" | grep -q "${OLLAMA_MODEL}"; then
-  echo "  Model '${OLLAMA_MODEL}' not found locally — pulling now …"
+  echo "  Model '${OLLAMA_MODEL}' not found — pulling now (~8.7 GB, please wait) …"
   ollama pull "${OLLAMA_MODEL}"
 fi
 
 echo "  Ollama OK (model: ${OLLAMA_MODEL})"
 
-# ── 2. Print connection hint ──────────────────────────────────────────────────
+# ── 3. Print connection hint ──────────────────────────────────────────────────
 PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "unknown")
 
 echo ""
@@ -78,7 +91,10 @@ echo "  │    export VAST_WS_URL=ws://${PUBLIC_IP}:${PORT}/ws/worker   │"
 echo "  └─────────────────────────────────────────────────────────────┘"
 echo ""
 
-# ── 3. Start the FastAPI worker ───────────────────────────────────────────────
+# ── 4. Start the FastAPI worker ───────────────────────────────────────────────
+# Trap Ctrl-C to also stop the background Ollama process we may have started.
+trap 'echo ""; echo "  Shutting down …"; kill $(pgrep -f "ollama serve") 2>/dev/null || true; exit 0' INT TERM
+
 OLLAMA_URL="${OLLAMA_URL}" \
 OLLAMA_MODEL="${OLLAMA_MODEL}" \
   uvicorn worker:app --host 0.0.0.0 --port "${PORT}"
