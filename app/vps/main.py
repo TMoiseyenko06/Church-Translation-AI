@@ -49,6 +49,24 @@ def unpack_message(raw: bytes) -> tuple[dict, bytes]:
     return meta, data
 
 
+# WebM Cluster EBML ID — marks start of actual audio data
+_WEBM_CLUSTER_ID = bytes([0x1F, 0x43, 0xB6, 0x75])
+
+
+def extract_webm_init(first_blob: bytes) -> tuple[bytes, bytes]:
+    """Split the first MediaRecorder blob into (pure_headers, first_cluster_data).
+
+    The first blob from MediaRecorder contains the WebM init segment (EBML
+    header + Segment info + Tracks) followed immediately by the first audio
+    Cluster.  We only want the header portion as the init segment so that we
+    don't re-play the first chunk's audio on every subsequent chunk.
+    """
+    idx = first_blob.find(_WEBM_CLUSTER_ID)
+    if idx == -1:
+        return first_blob, b""
+    return first_blob[:idx], first_blob[idx:]
+
+
 async def vast_receive_loop(ws) -> None:
     global booth_ws
     async for raw_msg in ws:
@@ -177,8 +195,12 @@ async def ws_booth(websocket: WebSocket) -> None:
                 continue
 
             if init_segment is None:
-                init_segment = data
-                chunk = data
+                # Extract pure WebM headers (no audio) from the first blob
+                init_segment, first_cluster = extract_webm_init(data)
+                if not first_cluster:
+                    # No audio in first blob yet — wait for next
+                    continue
+                chunk = init_segment + first_cluster  # equivalent to original data
             else:
                 chunk = init_segment + data
 
