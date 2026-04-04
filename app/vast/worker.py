@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
     # near-identical accuracy for Russian sermon speech.
     # int8_float16: quantised weights, faster GPU throughput than float16.
     logger.info("Loading faster-whisper large-v3-turbo on GPU …")
-    whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8_float16")
+    whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
     logger.info("Whisper ready.")
 
     # Persistent connection pool — avoids TCP handshake overhead on every chunk.
