@@ -57,7 +57,7 @@ logger = logging.getLogger("vast-worker")
 
 # Ollama endpoint and model for sermon translation.
 OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 
 # How many processed chunks to wait between voice-embedding refreshes.
 # At 4-second chunks, 8 chunks ≈ every ~32 seconds.
