@@ -33,7 +33,8 @@ import edge_tts
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from faster_whisper import WhisperModel
-from transformers import pipeline as hf_pipeline
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -64,27 +65,25 @@ NLLB_TGT_LANG = "eng_Latn"   # English
 # ─── Global state ─────────────────────────────────────────────────────────────
 
 whisper_model: Optional[WhisperModel] = None
-translator = None  # HuggingFace translation pipeline
+nllb_model = None
+nllb_tokenizer = None
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model, translator
+    global whisper_model, nllb_model, nllb_tokenizer
 
     logger.info("Loading faster-whisper large-v3-turbo on GPU …")
     whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8_float16")
     logger.info("Whisper ready.")
 
-    logger.info("Loading NLLB-200-distilled-1.3B translation model on GPU …")
-    translator = hf_pipeline(
-        "translation",
-        model="facebook/nllb-200-distilled-1.3B",
-        device=0,  # GPU 0
-        src_lang=NLLB_SRC_LANG,
-        tgt_lang=NLLB_TGT_LANG,
-        max_length=512,
-    )
+    logger.info("Loading NLLB-200-distilled-1.3B on GPU …")
+    nllb_tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-1.3B")
+    nllb_model = AutoModelForSeq2SeqLM.from_pretrained(
+        "facebook/nllb-200-distilled-1.3B"
+    ).to("cuda")
+    nllb_model.eval()
     logger.info("Translation model ready.")
     logger.info(f"TTS voice: {TTS_VOICE} at {TTS_RATE}")
     yield
@@ -173,13 +172,25 @@ def translate_sync(text: str, detected_lang: str) -> str:
         logger.info("Detected English — skipping translation.")
         return text
 
-    result = translator(  # type: ignore[operator]
+    inputs = nllb_tokenizer(  # type: ignore[operator]
         text,
-        src_lang=NLLB_SRC_LANG,
-        tgt_lang=NLLB_TGT_LANG,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
         max_length=512,
-    )
-    return result[0]["translation_text"].strip()
+    ).to("cuda")
+
+    tgt_lang_id = nllb_tokenizer.convert_tokens_to_ids(NLLB_TGT_LANG)  # type: ignore[operator]
+
+    with torch.no_grad():
+        output_ids = nllb_model.generate(  # type: ignore[union-attr]
+            **inputs,
+            forced_bos_token_id=tgt_lang_id,
+            max_new_tokens=256,
+            num_beams=4,
+        )
+
+    return nllb_tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()  # type: ignore[operator]
 
 
 # ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
