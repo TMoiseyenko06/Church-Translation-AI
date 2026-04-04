@@ -75,6 +75,7 @@ Guidelines:
 
 whisper_model: Optional[WhisperModel] = None
 _ollama_client: Optional[httpx.AsyncClient] = None
+_last_transcript: str = ""  # rolling context for Whisper initial_prompt
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
@@ -145,12 +146,18 @@ def convert_webm_to_wav(webm_bytes: bytes) -> str:
 # ─── Stage 2 – Transcription ─────────────────────────────────────────────────
 
 def transcribe_audio(wav_path: str) -> tuple[str, str]:
+    global _last_transcript
+
+    # Pass the last transcript as a text prompt so Whisper understands the
+    # ongoing topic and vocabulary, but condition_on_previous_text=False
+    # prevents it from using hidden beam-search state which causes repetition.
     segments, info = whisper_model.transcribe(  # type: ignore[union-attr]
         wav_path,
         beam_size=3,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
         condition_on_previous_text=False,
+        initial_prompt=_last_transcript or None,
         no_speech_threshold=0.6,
         compression_ratio_threshold=2.4,
     )
@@ -161,6 +168,11 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         return "", info.language
 
     text = " ".join(seg.text.strip() for seg in segments).strip()
+
+    # Keep last ~200 chars as rolling context for next chunk
+    if text:
+        _last_transcript = ((_last_transcript + " " + text)[-200:]).strip()
+
     return text, info.language
 
 
