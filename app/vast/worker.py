@@ -214,12 +214,35 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
 
 # ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
 
-async def synthesize_speech(text: str) -> bytes:
+def _rate_for_queue_depth(depth: int) -> str:
+    """
+    Return an edge-tts rate string that speeds up speech when the queue is
+    backing up, so translated audio stays in sync with the preacher.
+
+    depth 0   → +0%   (normal)
+    depth 1   → +15%  (slightly ahead)
+    depth 2–3 → +30%  (catching up)
+    depth 4+  → +50%  (maximum catch-up)
+    """
+    if depth == 0:
+        return "+0%"
+    if depth == 1:
+        return "+15%"
+    if depth <= 3:
+        return "+30%"
+    return "+50%"
+
+
+async def synthesize_speech(text: str, queue_depth: int = 0) -> bytes:
     """
     Synthesise `text` with the configured Microsoft neural male voice.
+    Speech rate is increased automatically when the queue is backing up.
     edge-tts streams MP3 chunks which are concatenated and returned.
     """
-    communicate = edge_tts.Communicate(text, TTS_VOICE)
+    rate = _rate_for_queue_depth(queue_depth)
+    if queue_depth > 0:
+        logger.info(f"TTS rate adjusted to {rate} (queue depth={queue_depth}).")
+    communicate = edge_tts.Communicate(text, TTS_VOICE, rate=rate)
     audio = bytearray()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -234,6 +257,7 @@ async def process_chunk(
     chunk_id: str,
     webm_bytes: bytes,
     send_lock: asyncio.Lock,
+    queue_depth: int = 0,
 ) -> None:
     loop = asyncio.get_event_loop()
 
@@ -271,9 +295,9 @@ async def process_chunk(
             await _send_error(websocket, send_lock, chunk_id, str(exc))
             return
 
-        # Stage 4: synthesise
+        # Stage 4: synthesise (speed up if queue is backing up)
         try:
-            mp3_bytes = await synthesize_speech(translated)
+            mp3_bytes = await synthesize_speech(translated, queue_depth)
         except Exception as exc:
             logger.error(f"[{chunk_id}] TTS error: {exc}")
             await _send_error(websocket, send_lock, chunk_id, str(exc))
@@ -329,8 +353,9 @@ async def ws_worker(websocket: WebSocket) -> None:
     async def pipeline_worker() -> None:
         while True:
             chunk_id, webm_bytes = await queue.get()
+            depth = queue.qsize()  # items still waiting behind this one
             try:
-                await process_chunk(websocket, chunk_id, webm_bytes, send_lock)
+                await process_chunk(websocket, chunk_id, webm_bytes, send_lock, depth)
             except Exception as exc:
                 logger.error(f"Unhandled pipeline error: {exc}")
             finally:
