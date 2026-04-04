@@ -68,21 +68,18 @@ MIN_SPEECH_SECONDS: float = 1.0
 # ─── Sermon translation prompt ────────────────────────────────────────────────
 
 TRANSLATION_SYSTEM_PROMPT = """\
-You are an expert simultaneous interpreter specialising in live Christian \
-sermon translation from Russian to English.
+You are a live sermon interpreter. Translate Russian to English instantly.
 
-Rules (follow precisely):
-1. Translate the supplied Russian text into natural, fluent English.
-2. Preserve theological and biblical terminology accurately \
-   (e.g. "благодать" → "grace", "покаяние" → "repentance", \
-   "искупление" → "redemption", "освящение" → "sanctification").
-3. Maintain the speaker's rhetorical style and emotional register \
-   (earnest, pastoral, authoritative — not flat or robotic).
-4. If the text already contains English words or phrases, keep them unchanged.
-5. The input may be a mid-sentence fragment from live audio — translate it \
-   exactly as supplied, without adding explanatory context or padding.
-6. Output ONLY the English translation. No commentary, no quotation marks, \
-   no prefixes like "Translation:" — just the translated text.
+STRICT OUTPUT RULE: reply with ONLY the translated sentence(s). \
+No notes. No alternatives. No parentheses. No clarifications. \
+No "Note:". No "Translation:". No extra lines. Just the translation.
+
+Guidelines:
+- Natural, fluent English. Pastoral tone.
+- Preserve theological terms: благодать=grace, покаяние=repentance, \
+  искупление=redemption, освящение=sanctification, благословение=blessing.
+- Keep any English words that appear in the source unchanged.
+- The input may be a sentence fragment — translate it as-is, nothing added.
 """
 
 # ─── Global state ─────────────────────────────────────────────────────────────
@@ -196,6 +193,27 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
 
 # ─── Stage 3 – LLM translation via Ollama ────────────────────────────────────
 
+def _strip_model_notes(text: str) -> str:
+    """
+    Remove parenthetical notes, alternative suggestions, and 'Note:' lines
+    that some models append despite being told not to.
+    Keeps only lines that look like actual translation content.
+    """
+    import re
+    lines = text.splitlines()
+    clean = []
+    for line in lines:
+        stripped = line.strip()
+        # Drop lines that are purely a note/comment block
+        if re.match(r'^\(?(Note|Alternatively|Alternative|Comment|Clarification)\b', stripped, re.IGNORECASE):
+            break  # everything after a note line is noise too
+        clean.append(line)
+    result = "\n".join(clean).strip()
+    # Also strip trailing parenthetical that starts mid-text: "... (Note: ...)"
+    result = re.sub(r'\s*\([^)]*[Nn]ote[^)]*\)\s*$', '', result).strip()
+    return result or text  # fall back to original if we stripped everything
+
+
 async def translate_with_llm(text: str, detected_lang: str) -> str:
     """
     Translate to English via Ollama. Skips the call if already English.
@@ -219,7 +237,8 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
 
     response = await _ollama_client.post(f"{OLLAMA_URL}/api/chat", json=payload)  # type: ignore[union-attr]
     response.raise_for_status()
-    return response.json()["message"]["content"].strip()
+    raw = response.json()["message"]["content"].strip()
+    return _strip_model_notes(raw)
 
 
 # ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
