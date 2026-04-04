@@ -190,12 +190,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/booth")
 async def booth_page():
-    return FileResponse(os.path.join(BASE_DIR, "booth.html"))
+    return FileResponse(
+        os.path.join(BASE_DIR, "booth.html"),
+        headers={"X-Frame-Options": "ALLOWALL", "Content-Security-Policy": "frame-ancestors *"},
+    )
 
 
 @app.get("/listen")
 async def listen_page():
-    return FileResponse(os.path.join(BASE_DIR, "listen.html"))
+    return FileResponse(
+        os.path.join(BASE_DIR, "listen.html"),
+        headers={"X-Frame-Options": "ALLOWALL", "Content-Security-Policy": "frame-ancestors *"},
+    )
 
 
 # ─── Listener push helper ─────────────────────────────────────────────────────
