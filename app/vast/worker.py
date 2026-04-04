@@ -60,6 +60,10 @@ MIN_TRANSCRIPT_CHARS: int = 4
 # near-silence; rejecting chunks with too little speech prevents this.
 MIN_SPEECH_SECONDS: float = 1.0
 
+# If more than this many chunks are waiting in the queue, drop the oldest ones
+# so the pipeline stays close to live instead of processing stale audio.
+MAX_QUEUE_DEPTH: int = 2
+
 # ─── Sermon translation prompt ────────────────────────────────────────────────
 
 TRANSLATION_SYSTEM_PROMPT = """\
@@ -353,6 +357,18 @@ async def ws_worker(websocket: WebSocket) -> None:
     async def pipeline_worker() -> None:
         while True:
             chunk_id, webm_bytes = await queue.get()
+
+            # If the queue has grown too deep, drain all but the most recent
+            # chunk so the pipeline jumps back to live instead of processing
+            # a long backlog of stale audio.
+            while queue.qsize() > MAX_QUEUE_DEPTH:
+                stale_id, _ = await queue.get()
+                queue.task_done()
+                logger.warning(
+                    f"Dropped stale chunk [{stale_id}] to catch up "
+                    f"(queue depth was {queue.qsize() + 1})."
+                )
+
             depth = queue.qsize()  # items still waiting behind this one
             try:
                 await process_chunk(websocket, chunk_id, webm_bytes, send_lock, depth)
