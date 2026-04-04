@@ -40,10 +40,22 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from faster_whisper import WhisperModel
 
+# ── PyTorch 2.6+ compatibility patch ─────────────────────────────────────────
+# PyTorch 2.6 changed torch.load to default weights_only=True, which breaks
+# Coqui TTS checkpoint loading. Patch torch.load to restore the old default
+# before TTS is imported so its internal calls succeed.
+import torch as _torch
+_orig_torch_load = _torch.load
+def _patched_torch_load(f, *args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _orig_torch_load(f, *args, **kwargs)
+_torch.load = _patched_torch_load
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Accept Coqui TOS non-interactively (required before importing TTS).
 # XTTS v2 is released under the Coqui Public Model License (non-commercial).
 os.environ["COQUI_TOS_AGREED"] = "1"
-from TTS.api import TTS  # noqa: E402  (must come after env var)
+from TTS.api import TTS  # noqa: E402  (must come after env var and patch)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
