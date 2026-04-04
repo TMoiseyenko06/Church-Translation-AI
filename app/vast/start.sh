@@ -41,6 +41,12 @@ else
   echo ""
 fi
 
+# ── CUDA library path (required for faster-whisper float16/int8) ──────────────
+CUDA_LIB="${MINICONDA_PATH}/envs/${CONDA_ENV}/lib/python3.11/site-packages/nvidia/cublas/lib"
+if [ -d "${CUDA_LIB}" ]; then
+  export LD_LIBRARY_PATH="${CUDA_LIB}:${LD_LIBRARY_PATH:-}"
+fi
+
 PORT=8888
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:32b}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
