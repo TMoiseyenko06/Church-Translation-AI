@@ -1,0 +1,14 @@
+services:
+  vps-relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Required: address of the Vast AI worker
+      # Set this in a .env file or pass with -e on the command line
+      - VAST_WS_URL=${VAST_WS_URL}
+    # Port 8000 is only needed for direct local access.
+    # Cloudflare Tunnel handles the public HTTPS/WSS — no ports need to
+    # be open on the VPS firewall for the app to work publicly.
+    # Uncomment if you want to access the relay directly on the host:
+    # ports:
+    #   - "8000:8000"
