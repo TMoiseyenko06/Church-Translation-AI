@@ -59,9 +59,11 @@ MIN_SPEECH_SECONDS:   float = 1.0
 TRANSLATION_SYSTEM_PROMPT = """\
 You are a live sermon interpreter. Translate Russian to English instantly.
 
-STRICT OUTPUT RULE: reply with ONLY the translated sentence(s). \
+STRICT OUTPUT RULE: reply with ONLY the translated sentence(s) in ENGLISH. \
 No notes. No alternatives. No parentheses. No clarifications. \
 No "Note:". No "Translation:". No extra lines. Just the translation.
+NEVER output Chinese, Japanese, Korean, Arabic, or any non-English language. \
+Output must be English using only Latin characters.
 
 Guidelines:
 - Natural, fluent English. Pastoral tone.
@@ -185,6 +187,15 @@ def _strip_model_notes(text: str) -> str:
     return result or text
 
 
+def _is_mostly_latin(text: str) -> bool:
+    """Return True if >80% of letters in text are Latin (ASCII a-z/A-Z)."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return True
+    latin = sum(1 for c in letters if ord(c) < 128)
+    return (latin / len(letters)) >= 0.8
+
+
 async def translate_with_llm(text: str, detected_lang: str) -> str:
     if detected_lang == "en":
         logger.info("Detected English — skipping translation.")
@@ -200,9 +211,16 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
         "options": {"temperature": 0.2, "num_predict": 200},
     }
 
-    response = await _ollama_client.post(f"{OLLAMA_URL}/api/chat", json=payload)  # type: ignore[union-attr]
-    response.raise_for_status()
-    return _strip_model_notes(response.json()["message"]["content"].strip())
+    for attempt in range(2):
+        response = await _ollama_client.post(f"{OLLAMA_URL}/api/chat", json=payload)  # type: ignore[union-attr]
+        response.raise_for_status()
+        result = _strip_model_notes(response.json()["message"]["content"].strip())
+        if _is_mostly_latin(result):
+            return result
+        logger.warning(f"Translation attempt {attempt+1} returned non-Latin text, retrying.")
+        payload["options"]["temperature"] = 0.1
+
+    return result  # return last attempt even if imperfect
 
 
 # ─── Stage 4 – TTS ───────────────────────────────────────────────────────────
