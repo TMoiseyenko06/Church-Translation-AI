@@ -150,6 +150,9 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         beam_size=3,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
+        condition_on_previous_text=False,
+        no_speech_threshold=0.6,
+        compression_ratio_threshold=2.4,
     )
 
     speech_seconds = getattr(info, "duration_after_vad", info.duration)
