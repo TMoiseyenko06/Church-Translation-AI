@@ -35,6 +35,10 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from faster_whisper import WhisperModel
 
+# Persistent async HTTP client reused across all translation requests.
+# Created in lifespan so it shares the running event loop.
+_ollama_client: Optional[httpx.AsyncClient] = None
+
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -89,16 +93,21 @@ whisper_model: Optional[WhisperModel] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model
+    global whisper_model, _ollama_client
 
-    logger.info("Loading faster-whisper large-v3 on GPU …")
-    whisper_model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+    # large-v3-turbo: distilled Whisper, ~8× faster than large-v3 with
+    # near-identical accuracy for Russian sermon speech.
+    # int8_float16: quantised weights, faster GPU throughput than float16.
+    logger.info("Loading faster-whisper large-v3-turbo on GPU …")
+    whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8_float16")
     logger.info("Whisper ready.")
 
+    # Persistent connection pool — avoids TCP handshake overhead on every chunk.
+    _ollama_client = httpx.AsyncClient(timeout=60.0)
+
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{OLLAMA_URL}/api/tags")
-            r.raise_for_status()
+        r = await _ollama_client.get(f"{OLLAMA_URL}/api/tags")
+        r.raise_for_status()
         logger.info(f"Ollama reachable at {OLLAMA_URL} — model: {OLLAMA_MODEL}")
     except Exception as exc:
         logger.warning(
@@ -108,6 +117,8 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"TTS voice: {TTS_VOICE}")
     yield
+
+    await _ollama_client.aclose()
     logger.info("Worker shutting down.")
 
 
@@ -165,7 +176,7 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
     """
     segments, info = whisper_model.transcribe(  # type: ignore[union-attr]
         wav_path,
-        beam_size=5,
+        beam_size=3,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
@@ -202,14 +213,12 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
         "stream": False,
         "options": {
             "temperature": 0.2,
-            "num_predict": 512,
+            "num_predict": 200,
         },
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
-        response.raise_for_status()
-
+    response = await _ollama_client.post(f"{OLLAMA_URL}/api/chat", json=payload)  # type: ignore[union-attr]
+    response.raise_for_status()
     return response.json()["message"]["content"].strip()
 
 
