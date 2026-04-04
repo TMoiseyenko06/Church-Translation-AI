@@ -333,7 +333,7 @@
       const options = mimeType ? { mimeType } : {};
       mediaRecorder = new MediaRecorder(stream, options);
 
-      // ondataavailable fires every 2 seconds (timeslice=2000).
+      // ondataavailable fires every 4 seconds (timeslice=4000).
       // Each Blob is sent as binary data over the WebSocket.
       mediaRecorder.addEventListener('dataavailable', async (event) => {
         if (event.data && event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
@@ -343,8 +343,8 @@
         }
       });
 
-      // timeslice=2000 → server receives a ~2-second audio segment every 2 s.
-      mediaRecorder.start(2000);
+      // timeslice=4000 → server receives a ~4-second audio segment every 4 s.
+      mediaRecorder.start(4000);
     }
 
     // ── Stop ──────────────────────────────────────────────────────────────────
