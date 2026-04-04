@@ -42,7 +42,7 @@ else
 fi
 
 PORT=8888
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:30b}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 OLLAMA_LOG="/tmp/ollama-church.log"
 
@@ -70,10 +70,21 @@ else
   done
 fi
 
-# ── 2. Pull model if not already downloaded ───────────────────────────────────
-if ! curl -sf "${OLLAMA_URL}/api/tags" | grep -q "${OLLAMA_MODEL}"; then
-  echo "  Model '${OLLAMA_MODEL}' not found — pulling now (~8.7 GB, please wait) …"
+# ── 2. Delete all other models, then pull the target model ───────────────────
+echo "  Removing any existing models …"
+EXISTING=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v '^$' || true)
+for model in $EXISTING; do
+  if [ "$model" != "${OLLAMA_MODEL}" ]; then
+    echo "  Deleting: $model"
+    ollama rm "$model" 2>/dev/null || true
+  fi
+done
+
+if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
+  echo "  Model '${OLLAMA_MODEL}' not found — pulling now (~19 GB, please wait) …"
   ollama pull "${OLLAMA_MODEL}"
+else
+  echo "  Model '${OLLAMA_MODEL}' already present."
 fi
 
 echo "  Ollama OK (model: ${OLLAMA_MODEL})"
