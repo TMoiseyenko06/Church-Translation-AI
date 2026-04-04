@@ -254,10 +254,6 @@
     let scheduledEndTime = 0;
     let chunksReceived   = 0;
 
-    // If more than this many seconds of audio are already queued ahead of the
-    // current playback position, abandon the backlog and jump to this chunk.
-    const MAX_AHEAD_SECONDS = 6;
-
     // ── Helpers ──────────────────────────────────────────────────────────────
     function setStatus(state, label) {
       statusDot.className    = state;
@@ -274,12 +270,8 @@
     // ── Gapless audio playback ────────────────────────────────────────────────
     // Each incoming binary message is a complete MP3 segment.
     // We decode it and schedule it to start exactly when the previous one ends,
-    // using AudioContext time as a monotonic clock.
-    //
-    // Catch-up logic: if the scheduled queue is more than MAX_AHEAD_SECONDS
-    // ahead of the current playback position, we've fallen too far behind live.
-    // In that case, reset the schedule and play this chunk immediately, which
-    // abandons the stale backlog and snaps back to the most recent translation.
+    // using AudioContext time as a monotonic clock.  This keeps the translated
+    // speech gapless even when segments arrive in bursts.
     async function scheduleAudioChunk(arrayBuffer) {
       let audioBuffer;
       try {
@@ -289,21 +281,12 @@
         return;
       }
 
-      const aheadBy = scheduledEndTime - audioCtx.currentTime;
-      if (aheadBy > MAX_AHEAD_SECONDS) {
-        // Too far behind — jump to live.
-        console.warn(`Audio backlog ${aheadBy.toFixed(1)}s — jumping to live.`);
-        scheduledEndTime = 0;
-        setInfo(
-          `<strong>Caught up to live</strong> — resuming from current translation.`
-        );
-      }
-
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
 
-      // Start immediately (+ 50 ms safety) if no backlog, otherwise chain.
+      // If the previous chunk has already finished playing (or this is the
+      // first chunk), start immediately with a tiny safety buffer (50 ms).
       const startTime = Math.max(audioCtx.currentTime + 0.05, scheduledEndTime);
       source.start(startTime);
       scheduledEndTime = startTime + audioBuffer.duration;
