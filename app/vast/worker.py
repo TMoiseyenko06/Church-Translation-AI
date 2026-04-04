@@ -4,10 +4,10 @@ Church Translation – Vast AI Worker
 Pipeline per audio chunk (Russian sermon → English):
   1. Receive framed binary message from VPS relay (JSON header + WebM bytes)
   2. Convert WebM → 16 kHz mono WAV  (ffmpeg subprocess)
-  3. Transcribe with faster-whisper large-v3, language auto-detected
-  4. If detected language is already English → skip translation (pass-through)
-     Otherwise → translate Russian → English via local Ollama (Qwen2.5-14B),
-     using a sermon-optimised system prompt
+  3. Transcribe with faster-whisper large-v3-turbo, language auto-detected
+  4. If detected language is already English → pass through unchanged
+     Otherwise → translate Russian → English via NLLB-200-distilled-1.3B
+     (Facebook's dedicated neural translation model, runs on GPU)
   5. Synthesise English speech with edge-tts (Microsoft neural male voice)
   6. Send resulting MP3 bytes back to VPS relay
 
@@ -30,14 +30,10 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import edge_tts
-import httpx
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from faster_whisper import WhisperModel
-
-# Persistent async HTTP client reused across all translation requests.
-# Created in lifespan so it shares the running event loop.
-_ollama_client: Optional[httpx.AsyncClient] = None
+from transformers import pipeline as hf_pipeline
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -49,73 +45,49 @@ logger = logging.getLogger("vast-worker")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-OLLAMA_URL: str   = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:32b")
-
 # Microsoft neural male voice for English output.
 # Alternatives: en-US-GuyNeural, en-US-EricNeural, en-GB-RyanNeural
 TTS_VOICE: str = "en-US-ChristopherNeural"
+TTS_RATE:  str = "+50%"
 
 # Minimum characters in transcript before attempting translation + TTS.
 MIN_TRANSCRIPT_CHARS: int = 4
 
-# Minimum seconds of real speech (after VAD) required to process a chunk.
-# Whisper hallucinates common phrases ("Goodbye.", "Thanks.", etc.) when given
-# near-silence; rejecting chunks with too little speech prevents this.
+# Minimum seconds of real speech (after VAD) to process a chunk.
+# Prevents Whisper hallucinations on near-silence.
 MIN_SPEECH_SECONDS: float = 1.0
 
-
-# ─── Sermon translation prompt ────────────────────────────────────────────────
-
-TRANSLATION_SYSTEM_PROMPT = """\
-You are a live sermon interpreter. Translate Russian to English instantly.
-
-STRICT OUTPUT RULE: reply with ONLY the translated sentence(s). \
-No notes. No alternatives. No parentheses. No clarifications. \
-No "Note:". No "Translation:". No extra lines. Just the translation.
-
-Guidelines:
-- Natural, fluent English. Pastoral tone.
-- Preserve theological terms: благодать=grace, покаяние=repentance, \
-  искупление=redemption, освящение=sanctification, благословение=blessing.
-- Keep any English words that appear in the source unchanged.
-- The input may be a sentence fragment — translate it as-is, nothing added.
-"""
+# NLLB language codes
+NLLB_SRC_LANG = "rus_Cyrl"   # Russian
+NLLB_TGT_LANG = "eng_Latn"   # English
 
 # ─── Global state ─────────────────────────────────────────────────────────────
 
 whisper_model: Optional[WhisperModel] = None
+translator = None  # HuggingFace translation pipeline
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model, _ollama_client
+    global whisper_model, translator
 
-    # large-v3-turbo: distilled Whisper, ~8× faster than large-v3 with
-    # near-identical accuracy for Russian sermon speech.
-    # int8_float16: quantised weights, faster GPU throughput than float16.
     logger.info("Loading faster-whisper large-v3-turbo on GPU …")
     whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8_float16")
     logger.info("Whisper ready.")
 
-    # Persistent connection pool — avoids TCP handshake overhead on every chunk.
-    _ollama_client = httpx.AsyncClient(timeout=60.0)
-
-    try:
-        r = await _ollama_client.get(f"{OLLAMA_URL}/api/tags")
-        r.raise_for_status()
-        logger.info(f"Ollama reachable at {OLLAMA_URL} — model: {OLLAMA_MODEL}")
-    except Exception as exc:
-        logger.warning(
-            f"Ollama not reachable at startup ({exc}). "
-            "Translation will fail until Ollama is running."
-        )
-
-    logger.info(f"TTS voice: {TTS_VOICE}")
+    logger.info("Loading NLLB-200-distilled-1.3B translation model on GPU …")
+    translator = hf_pipeline(
+        "translation",
+        model="facebook/nllb-200-distilled-1.3B",
+        device=0,  # GPU 0
+        src_lang=NLLB_SRC_LANG,
+        tgt_lang=NLLB_TGT_LANG,
+        max_length=512,
+    )
+    logger.info("Translation model ready.")
+    logger.info(f"TTS voice: {TTS_VOICE} at {TTS_RATE}")
     yield
-
-    await _ollama_client.aclose()
     logger.info("Worker shutting down.")
 
 
@@ -166,8 +138,7 @@ def convert_webm_to_wav(webm_bytes: bytes) -> str:
 
 def transcribe_audio(wav_path: str) -> tuple[str, str]:
     """
-    Transcribe with faster-whisper. Language detection always enabled —
-    the preacher may use English words mid-sentence.
+    Transcribe with faster-whisper. Language detection always enabled.
     Returns (transcript_text, detected_language_code).
     Returns ("", language) if the chunk contains too little real speech.
     """
@@ -178,7 +149,6 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         vad_parameters={"min_silence_duration_ms": 500},
     )
 
-    # Reject near-silence chunks to prevent Whisper hallucinations.
     speech_seconds = getattr(info, "duration_after_vad", info.duration)
     if speech_seconds < MIN_SPEECH_SECONDS:
         logger.info(
@@ -191,60 +161,28 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
     return text, info.language
 
 
-# ─── Stage 3 – LLM translation via Ollama ────────────────────────────────────
+# ─── Stage 3 – Neural translation (NLLB, blocking, thread executor) ──────────
 
-def _strip_model_notes(text: str) -> str:
+def translate_sync(text: str, detected_lang: str) -> str:
     """
-    Remove parenthetical notes, alternative suggestions, and 'Note:' lines
-    that some models append despite being told not to.
-    Keeps only lines that look like actual translation content.
-    """
-    import re
-    lines = text.splitlines()
-    clean = []
-    for line in lines:
-        stripped = line.strip()
-        # Drop lines that are purely a note/comment block
-        if re.match(r'^\(?(Note|Alternatively|Alternative|Comment|Clarification)\b', stripped, re.IGNORECASE):
-            break  # everything after a note line is noise too
-        clean.append(line)
-    result = "\n".join(clean).strip()
-    # Also strip trailing parenthetical that starts mid-text: "... (Note: ...)"
-    result = re.sub(r'\s*\([^)]*[Nn]ote[^)]*\)\s*$', '', result).strip()
-    return result or text  # fall back to original if we stripped everything
-
-
-async def translate_with_llm(text: str, detected_lang: str) -> str:
-    """
-    Translate to English via Ollama. Skips the call if already English.
+    Translate `text` to English using NLLB-200.
+    Skips translation if the detected language is already English.
+    Runs synchronously — call via run_in_executor.
     """
     if detected_lang == "en":
         logger.info("Detected English — skipping translation.")
         return text
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
-            {"role": "user",   "content": text},
-        ],
-        "stream": False,
-        "options": {
-            "temperature": 0.2,
-            "num_predict": 200,
-        },
-    }
-
-    response = await _ollama_client.post(f"{OLLAMA_URL}/api/chat", json=payload)  # type: ignore[union-attr]
-    response.raise_for_status()
-    raw = response.json()["message"]["content"].strip()
-    return _strip_model_notes(raw)
+    result = translator(  # type: ignore[operator]
+        text,
+        src_lang=NLLB_SRC_LANG,
+        tgt_lang=NLLB_TGT_LANG,
+        max_length=512,
+    )
+    return result[0]["translation_text"].strip()
 
 
 # ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
-
-TTS_RATE: str = "+50%"
-
 
 async def synthesize_speech(text: str) -> bytes:
     """
@@ -289,14 +227,19 @@ async def process_chunk(
             return
 
         has_speech = len(text) >= MIN_TRANSCRIPT_CHARS
-        logger.info(f"[{chunk_id}] Transcript [{detected_lang}]: {text!r} (speech={'yes' if has_speech else 'no'})")
+        logger.info(
+            f"[{chunk_id}] Transcript [{detected_lang}]: {text!r} "
+            f"(speech={'yes' if has_speech else 'no'})"
+        )
 
         if not has_speech:
             return
 
         # Stage 3: translate
         try:
-            translated = await translate_with_llm(text, detected_lang)
+            translated = await loop.run_in_executor(
+                None, translate_sync, text, detected_lang
+            )
             logger.info(f"[{chunk_id}] Translated: {translated!r}")
         except Exception as exc:
             logger.error(f"[{chunk_id}] Translation error: {exc}")
@@ -387,13 +330,16 @@ async def ws_worker(websocket: WebSocket) -> None:
             if meta.get("type") != "process":
                 continue
 
-            chunk_id   = meta.get("chunk_id", "unknown")
+            chunk_id     = meta.get("chunk_id", "unknown")
             active_langs = meta.get("active_langs", [])
 
             if "en" not in active_langs:
                 continue
 
-            logger.info(f"Queued chunk [{chunk_id}], size={len(webm_bytes):,} bytes, queue depth={queue.qsize()}.")
+            logger.info(
+                f"Queued chunk [{chunk_id}], size={len(webm_bytes):,} bytes, "
+                f"queue depth={queue.qsize()}."
+            )
             await queue.put((chunk_id, webm_bytes))
 
     except WebSocketDisconnect:

@@ -2,5 +2,6 @@ fastapi
 uvicorn[standard]
 faster-whisper
 edge-tts
-httpx
 python-multipart
+transformers
+sentencepiece
