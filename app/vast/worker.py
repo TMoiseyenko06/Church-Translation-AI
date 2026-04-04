@@ -4,14 +4,12 @@ Church Translation – Vast AI Worker
 Pipeline per audio chunk (Russian sermon → English):
   1. Receive framed binary message from VPS relay (JSON header + WebM bytes)
   2. Convert WebM → 16 kHz mono WAV  (ffmpeg subprocess)
-  3. Transcribe with faster-whisper large-v3, language auto-detected.
-     Whisper's output is already split into sentence-level segments.
-  4. Translate each segment independently via local Ollama (Qwen2.5-14B).
-     English segments are passed through without translation.
-  5. Measure the preacher's speech rate (words/second from VAD duration)
-     and compute a matching TTS rate so translated speech fits the same window.
-  6. Synthesise each translated segment with edge-tts and send it to VPS
-     as its own audio frame. The browser's gapless player chains them.
+  3. Transcribe with faster-whisper large-v3, language auto-detected
+  4. If detected language is already English → skip translation (pass-through)
+     Otherwise → translate Russian → English via local Ollama (Qwen2.5-14B),
+     using a sermon-optimised system prompt
+  5. Synthesise English speech with edge-tts (Microsoft neural male voice)
+  6. Send resulting MP3 bytes back to VPS relay
 
 Framing protocol (shared with VPS relay, binary WebSocket messages):
   [4-byte big-endian uint32 = JSON length][JSON bytes][audio bytes]
@@ -158,36 +156,31 @@ def convert_webm_to_wav(webm_bytes: bytes) -> str:
 
 # ─── Stage 2 – Transcription (blocking, thread executor) ─────────────────────
 
-def transcribe_audio(wav_path: str) -> tuple[list[str], str, float]:
+def transcribe_audio(wav_path: str) -> tuple[str, str]:
     """
-    Transcribe with faster-whisper. Returns (segments, language, speech_seconds).
-
-    `segments` is a list of sentence/phrase strings as Whisper naturally splits
-    them — each will be translated and synthesised independently so listeners
-    hear one sentence at a time rather than a joined blob of text.
-
-    Returns an empty segments list if the chunk contains too little real speech
-    (prevents Whisper hallucinations on near-silence chunks).
+    Transcribe with faster-whisper. Language detection always enabled —
+    the preacher may use English words mid-sentence.
+    Returns (transcript_text, detected_language_code).
+    Returns ("", language) if the chunk contains too little real speech.
     """
-    segments_iter, info = whisper_model.transcribe(  # type: ignore[union-attr]
+    segments, info = whisper_model.transcribe(  # type: ignore[union-attr]
         wav_path,
         beam_size=5,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
 
+    # Reject near-silence chunks to prevent Whisper hallucinations.
     speech_seconds = getattr(info, "duration_after_vad", info.duration)
     if speech_seconds < MIN_SPEECH_SECONDS:
         logger.info(
             f"Skipping chunk — only {speech_seconds:.2f}s of speech after VAD "
             f"(threshold: {MIN_SPEECH_SECONDS}s)."
         )
-        return [], info.language, speech_seconds
+        return "", info.language
 
-    # Collect segments eagerly (the iterator is lazy; reading it here while
-    # we still hold the executor thread keeps GPU usage sequential).
-    segments = [seg.text.strip() for seg in segments_iter if seg.text.strip()]
-    return segments, info.language, speech_seconds
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return text, info.language
 
 
 # ─── Stage 3 – LLM translation via Ollama ────────────────────────────────────
@@ -220,40 +213,17 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
     return response.json()["message"]["content"].strip()
 
 
-# ─── Stage 4 – TTS rate matching ─────────────────────────────────────────────
-
-# Approximate base speaking rate of Christopher Neural at rate="+0%".
-# Measured empirically; adjust if the voice sounds consistently too fast/slow.
-_TTS_BASE_WPS: float = 2.5  # words per second
-
-
-def compute_tts_rate(translated_word_count: int, speech_seconds: float) -> str:
-    """
-    Return an edge-tts `rate` string that makes the synthesised speech fill
-    roughly the same duration as the preacher's original utterance.
-
-    translated_word_count: number of English words across all segments
-    speech_seconds: VAD-filtered duration of the source audio (actual speech only)
-    """
-    if speech_seconds <= 0 or translated_word_count <= 0:
-        return "+30%"  # safe fallback
-
-    target_wps = translated_word_count / speech_seconds
-    pct = (target_wps / _TTS_BASE_WPS - 1.0) * 100.0
-    # Clamp: don't go slower than –10% (sounds drowsy) or faster than +80%
-    pct = max(-10.0, min(80.0, pct))
-    sign = "+" if pct >= 0 else ""
-    return f"{sign}{pct:.0f}%"
-
-
 # ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
 
-async def synthesize_speech(text: str, rate: str = "+30%") -> bytes:
+TTS_RATE: str = "+50%"
+
+
+async def synthesize_speech(text: str) -> bytes:
     """
-    Synthesise `text` with the configured Microsoft neural male voice at `rate`.
+    Synthesise `text` with the configured Microsoft neural male voice.
     edge-tts streams MP3 chunks which are concatenated and returned.
     """
-    communicate = edge_tts.Communicate(text, TTS_VOICE, rate=rate)
+    communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE)
     audio = bytearray()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -269,11 +239,6 @@ async def process_chunk(
     webm_bytes: bytes,
     send_lock: asyncio.Lock,
 ) -> None:
-    """
-    Full pipeline for one audio chunk:
-      WebM → WAV → Whisper segments → per-segment translation → rate-matched TTS
-      → one audio frame sent to VPS per sentence.
-    """
     loop = asyncio.get_event_loop()
 
     # Stage 1: WebM → WAV
@@ -285,9 +250,9 @@ async def process_chunk(
         return
 
     try:
-        # Stage 2: transcribe → list of sentence segments
+        # Stage 2: transcribe
         try:
-            segments, detected_lang, speech_secs = await loop.run_in_executor(
+            text, detected_lang = await loop.run_in_executor(
                 None, transcribe_audio, wav_path
             )
         except Exception as exc:
@@ -295,67 +260,44 @@ async def process_chunk(
             await _send_error(websocket, send_lock, chunk_id, str(exc))
             return
 
-        # Filter out empty/very-short segments (stray punctuation, etc.)
-        segments = [s for s in segments if len(s) >= MIN_TRANSCRIPT_CHARS]
+        has_speech = len(text) >= MIN_TRANSCRIPT_CHARS
+        logger.info(f"[{chunk_id}] Transcript [{detected_lang}]: {text!r} (speech={'yes' if has_speech else 'no'})")
 
-        if not segments:
+        if not has_speech:
             return
 
-        logger.info(
-            f"[{chunk_id}] [{detected_lang}] {len(segments)} segment(s) "
-            f"in {speech_secs:.2f}s of speech."
+        # Stage 3: translate
+        try:
+            translated = await translate_with_llm(text, detected_lang)
+            logger.info(f"[{chunk_id}] Translated: {translated!r}")
+        except Exception as exc:
+            logger.error(f"[{chunk_id}] Translation error: {exc}")
+            await _send_error(websocket, send_lock, chunk_id, str(exc))
+            return
+
+        # Stage 4: synthesise
+        try:
+            mp3_bytes = await synthesize_speech(translated)
+        except Exception as exc:
+            logger.error(f"[{chunk_id}] TTS error: {exc}")
+            await _send_error(websocket, send_lock, chunk_id, str(exc))
+            return
+
+        # Send result frame to VPS
+        frame = pack_message(
+            {
+                "type":          "result",
+                "chunk_id":      chunk_id,
+                "lang":          "en",
+                "detected_lang": detected_lang,
+                "transcript":    text,
+            },
+            mp3_bytes,
         )
+        async with send_lock:
+            await websocket.send_bytes(frame)
 
-        # Stage 3: translate all segments up-front so we know the total word
-        # count before computing the TTS rate.
-        translations: list[str] = []
-        for i, seg_text in enumerate(segments):
-            logger.info(f"[{chunk_id}] Seg {i+1}/{len(segments)}: {seg_text!r}")
-            try:
-                translated = await translate_with_llm(seg_text, detected_lang)
-            except Exception as exc:
-                logger.error(f"[{chunk_id}] Translation error (seg {i+1}): {exc}")
-                translated = seg_text  # fall back to original on error
-            logger.info(f"[{chunk_id}] → {translated!r}")
-            translations.append(translated)
-
-        # Compute TTS rate from total translated words vs total speech duration.
-        total_words = sum(len(t.split()) for t in translations)
-        rate = compute_tts_rate(total_words, speech_secs)
-        logger.info(
-            f"[{chunk_id}] TTS rate: {rate}  "
-            f"({total_words} words / {speech_secs:.2f}s speech)"
-        )
-
-        # Stage 4: synthesise + send each sentence individually.
-        # The first segment carries the full transcript for the booth display.
-        full_transcript = " ".join(segments)
-        for i, (seg_text, translated) in enumerate(zip(segments, translations)):
-            try:
-                mp3_bytes = await synthesize_speech(translated, rate)
-            except Exception as exc:
-                logger.error(f"[{chunk_id}] TTS error (seg {i+1}): {exc}")
-                continue
-
-            frame = pack_message(
-                {
-                    "type":          "result",
-                    "chunk_id":      chunk_id,
-                    "lang":          "en",
-                    "detected_lang": detected_lang,
-                    # Send transcript only with the first segment to avoid
-                    # the booth display updating repeatedly for the same chunk.
-                    "transcript":    full_transcript if i == 0 else "",
-                },
-                mp3_bytes,
-            )
-            async with send_lock:
-                await websocket.send_bytes(frame)
-
-            logger.info(
-                f"[{chunk_id}] Seg {i+1}/{len(segments)} sent "
-                f"({len(mp3_bytes):,} bytes MP3)."
-            )
+        logger.info(f"[{chunk_id}] Sent {len(mp3_bytes):,} bytes of MP3 to VPS.")
 
     finally:
         try:
