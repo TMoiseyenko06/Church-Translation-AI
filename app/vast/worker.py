@@ -49,7 +49,7 @@ OLLAMA_URL: str   = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
 OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 
 TTS_VOICE: str = "en-US-ChristopherNeural"
-TTS_RATE:  str = "+50%"
+TTS_RATE:  str = "+30%"
 
 MIN_TRANSCRIPT_CHARS: int = 4
 MIN_SPEECH_SECONDS:   float = 1.0
