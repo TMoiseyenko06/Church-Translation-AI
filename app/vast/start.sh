@@ -36,6 +36,15 @@ else
   done
 fi
 
+# Delete all models except the target, then pull if missing
+echo "  Removing other models …"
+for model in $(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v '^$'); do
+  if [ "$model" != "${OLLAMA_MODEL}" ]; then
+    echo "  Deleting: $model"
+    ollama rm "$model" 2>/dev/null || true
+  fi
+done
+
 # Pull model if missing
 if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
   echo "  Pulling '${OLLAMA_MODEL}' …"
