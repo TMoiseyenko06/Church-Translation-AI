@@ -79,15 +79,20 @@ fi
 echo "  Ollama OK (model: ${OLLAMA_MODEL})"
 
 # ── 3. Print connection hint ──────────────────────────────────────────────────
+# Vast injects VAST_TCP_PORT_X with the external mapped port for internal port X.
+# Fall back to the internal port if the variable is not set (e.g. local testing).
 PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "unknown")
+EXTERNAL_PORT="${VAST_TCP_PORT_8888:-${PORT}}"
+VAST_WS_URL="ws://${PUBLIC_IP}:${EXTERNAL_PORT}/ws/worker"
 
 echo ""
 echo "  ┌─────────────────────────────────────────────────────────────┐"
 echo "  │  Church Translation – Vast AI Worker                        │"
-echo "  │  Listening on 0.0.0.0:${PORT}                                  │"
+echo "  │  Internal port : ${PORT}                                       │"
+echo "  │  External port : ${EXTERNAL_PORT}                                   │"
 echo "  │                                                             │"
-echo "  │  Tell the VPS:                                              │"
-echo "  │    export VAST_WS_URL=ws://${PUBLIC_IP}:${PORT}/ws/worker   │"
+echo "  │  Copy this to your VPS:                                     │"
+echo "  │    export VAST_WS_URL=${VAST_WS_URL}"
 echo "  └─────────────────────────────────────────────────────────────┘"
 echo ""
 
