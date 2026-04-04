@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# start.sh – Vast AI worker (Whisper + NLLB translation + edge-tts)
-#
-# Usage:
-#   chmod +x start.sh && ./start.sh
-#
-# One-time setup:
-#   conda create -n church python=3.11 -y && conda activate church
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
-#   pip install -r requirements.txt
-#   sudo apt install -y ffmpeg
-# ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── 0. Activate conda environment ─────────────────────────────────────────────
 CONDA_ENV="${CONDA_ENV:-church}"
 MINICONDA_PATH="${MINICONDA_PATH:-$HOME/miniconda3}"
 
@@ -25,30 +12,44 @@ else
   echo "  WARNING: conda not found at ${MINICONDA_PATH}. Using system Python."
 fi
 
-# ── CUDA library path (required for faster-whisper int8_float16) ──────────────
+# CUDA library path (required for faster-whisper int8_float16)
 CUDA_LIB="${MINICONDA_PATH}/envs/${CONDA_ENV}/lib/python3.11/site-packages/nvidia/cublas/lib"
 if [ -d "${CUDA_LIB}" ]; then
   export LD_LIBRARY_PATH="${CUDA_LIB}:${LD_LIBRARY_PATH:-}"
 fi
 
 PORT=8888
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+OLLAMA_LOG="/tmp/ollama-church.log"
 
-# ── Print connection hint ──────────────────────────────────────────────────────
+# Start Ollama if not already running
+if curl -sf "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; then
+  echo "  Ollama already running."
+else
+  echo "  Starting Ollama in background …"
+  nohup ollama serve >"${OLLAMA_LOG}" 2>&1 &
+  for i in $(seq 1 15); do
+    curl -sf "${OLLAMA_URL}/api/tags" >/dev/null 2>&1 && echo "  Ollama ready." && break
+    [ "$i" -eq 15 ] && echo "  ERROR: Ollama did not start. Check ${OLLAMA_LOG}" && exit 1
+    sleep 1
+  done
+fi
+
+# Pull model if missing
+if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
+  echo "  Pulling '${OLLAMA_MODEL}' …"
+  ollama pull "${OLLAMA_MODEL}"
+fi
+echo "  Ollama OK (model: ${OLLAMA_MODEL})"
+
+# Print connection info
 PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "unknown")
 EXTERNAL_PORT="${VAST_TCP_PORT_8888:-${PORT}}"
-VAST_WS_URL="ws://${PUBLIC_IP}:${EXTERNAL_PORT}/ws/worker"
-
 echo ""
-echo "  ┌─────────────────────────────────────────────────────────────┐"
-echo "  │  Church Translation – Vast AI Worker                        │"
-echo "  │  Internal port : ${PORT}                                       │"
-echo "  │  External port : ${EXTERNAL_PORT}                                   │"
-echo "  │                                                             │"
-echo "  │  Copy this to your VPS:                                     │"
-echo "  │    export VAST_WS_URL=${VAST_WS_URL}"
-echo "  └─────────────────────────────────────────────────────────────┘"
+echo "  VAST_WS_URL=ws://${PUBLIC_IP}:${EXTERNAL_PORT}/ws/worker"
 echo ""
 
-# ── Start the FastAPI worker ──────────────────────────────────────────────────
-trap 'echo "Shutting down …"; exit 0' INT TERM
-uvicorn worker:app --host 0.0.0.0 --port "${PORT}"
+trap 'kill $(pgrep -f "ollama serve") 2>/dev/null || true; exit 0' INT TERM
+OLLAMA_URL="${OLLAMA_URL}" OLLAMA_MODEL="${OLLAMA_MODEL}" \
+  uvicorn worker:app --host 0.0.0.0 --port "${PORT}"
