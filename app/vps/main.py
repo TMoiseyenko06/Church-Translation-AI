@@ -204,18 +204,15 @@ async def ws_booth(websocket: WebSocket) -> None:
             else:
                 chunk = init_segment + data
 
-            async with listeners_lock:
-                active_langs = [l for l, s in listeners.items() if s]
-
-            if not active_langs:
-                continue
-
             if vast_ws is None:
                 try:
                     await websocket.send_text(json.dumps({"error": "Backend unavailable."}))
                 except Exception:
                     pass
                 continue
+
+            async with listeners_lock:
+                active_langs = [l for l, s in listeners.items() if s] or list(SUPPORTED_LANGUAGES.keys())
 
             chunk_id = str(uuid.uuid4())
             payload = pack_message(

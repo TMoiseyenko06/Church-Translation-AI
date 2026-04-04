@@ -288,10 +288,6 @@ async def ws_worker(websocket: WebSocket) -> None:
     async def pipeline_worker() -> None:
         while True:
             chunk_id, webm_bytes = await queue.get()
-            while not queue.empty():
-                queue.task_done()
-                chunk_id, webm_bytes = queue.get_nowait()
-                logger.warning(f"Skipped stale chunk, processing latest [{chunk_id}].")
             try:
                 await process_chunk(websocket, chunk_id, webm_bytes, send_lock)
             except Exception as exc:
