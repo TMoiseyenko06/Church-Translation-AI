@@ -55,6 +55,11 @@ TTS_VOICE: str = "en-US-ChristopherNeural"
 # Minimum characters in transcript before attempting translation + TTS.
 MIN_TRANSCRIPT_CHARS: int = 4
 
+# Minimum seconds of real speech (after VAD) required to process a chunk.
+# Whisper hallucinates common phrases ("Goodbye.", "Thanks.", etc.) when given
+# near-silence; rejecting chunks with too little speech prevents this.
+MIN_SPEECH_SECONDS: float = 1.0
+
 # ─── Sermon translation prompt ────────────────────────────────────────────────
 
 TRANSLATION_SYSTEM_PROMPT = """\
@@ -155,6 +160,7 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
     Transcribe with faster-whisper. Language detection always enabled —
     the preacher may use English words mid-sentence.
     Returns (transcript_text, detected_language_code).
+    Returns ("", language) if the chunk contains too little real speech.
     """
     segments, info = whisper_model.transcribe(  # type: ignore[union-attr]
         wav_path,
@@ -162,6 +168,16 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
+
+    # Reject near-silence chunks to prevent Whisper hallucinations.
+    speech_seconds = getattr(info, "duration_after_vad", info.duration)
+    if speech_seconds < MIN_SPEECH_SECONDS:
+        logger.info(
+            f"Skipping chunk — only {speech_seconds:.2f}s of speech after VAD "
+            f"(threshold: {MIN_SPEECH_SECONDS}s)."
+        )
+        return "", info.language
+
     text = " ".join(seg.text.strip() for seg in segments).strip()
     return text, info.language
 
