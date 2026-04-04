@@ -1,9 +1,6 @@
 fastapi
 uvicorn[standard]
 faster-whisper
-TTS
-transformers==4.39.3
+edge-tts
 httpx
-soundfile
-numpy
 python-multipart

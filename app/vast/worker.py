@@ -6,14 +6,10 @@ Pipeline per audio chunk (Russian sermon → English):
   2. Convert WebM → 16 kHz mono WAV  (ffmpeg subprocess)
   3. Transcribe with faster-whisper large-v3, language auto-detected
   4. If detected language is already English → skip translation (pass-through)
-     Otherwise → translate Russian → English via local Ollama (Qwen2.5-7B),
+     Otherwise → translate Russian → English via local Ollama (Qwen2.5-14B),
      using a sermon-optimised system prompt
-  5. Voice cloning: extract speaker embedding from incoming audio (XTTS v2),
-     cache it, refresh every VOICE_REFRESH_INTERVAL chunks so the embedding
-     tracks mic position changes over a long service
-  6. Synthesise English speech in the preacher's cloned voice (XTTS v2 GPU)
-  7. Convert synthesised WAV → MP3 (ffmpeg) and pack into a result frame
-  8. Send result frame back to VPS relay
+  5. Synthesise English speech with edge-tts (Microsoft neural male voice)
+  6. Send resulting MP3 bytes back to VPS relay
 
 Framing protocol (shared with VPS relay, binary WebSocket messages):
   [4-byte big-endian uint32 = JSON length][JSON bytes][audio bytes]
@@ -33,50 +29,11 @@ import tempfile
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import edge_tts
 import httpx
-import numpy as np
-import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from faster_whisper import WhisperModel
-
-# ── PyTorch 2.6+ compatibility patch ─────────────────────────────────────────
-# PyTorch 2.6 changed torch.load to default weights_only=True, which breaks
-# Coqui TTS checkpoint loading. Patch torch.load to restore the old default
-# before TTS is imported so its internal calls succeed.
-import torch as _torch
-_orig_torch_load = _torch.load
-def _patched_torch_load(f, *args, **kwargs):
-    kwargs.setdefault("weights_only", False)
-    return _orig_torch_load(f, *args, **kwargs)
-_torch.load = _patched_torch_load
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Accept Coqui TOS non-interactively (required before importing TTS).
-# XTTS v2 is released under the Coqui Public Model License (non-commercial).
-# Accept Coqui TOS non-interactively (required before importing TTS).
-# XTTS v2 is released under the Coqui Public Model License (non-commercial).
-os.environ["COQUI_TOS_AGREED"] = "1"
-from TTS.api import TTS  # noqa: E402  (must come after env var and patch)
-
-# ── XTTS audio loader patch ───────────────────────────────────────────────────
-# Newer Coqui TTS versions use torchcodec for audio loading inside
-# get_conditioning_latents(), but torchcodec is not available in all
-# environments. Replace the loader with a torchaudio-based equivalent —
-# torchaudio ships with PyTorch so it is always available.
-import torchaudio as _torchaudio
-import TTS.tts.layers.xtts.tokenizer as _xtts_tokenizer
-
-def _load_audio_torchaudio(audiopath, sampling_rate):
-    audio, sr = _torchaudio.load(audiopath)
-    if sr != sampling_rate:
-        audio = _torchaudio.transforms.Resample(sr, sampling_rate)(audio)
-    if audio.shape[0] > 1:
-        audio = audio.mean(0, keepdim=True)  # mix down to mono
-    return audio.squeeze()
-
-_xtts_tokenizer.load_audio = _load_audio_torchaudio
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -88,16 +45,14 @@ logger = logging.getLogger("vast-worker")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-# Ollama endpoint and model for sermon translation.
-OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_URL: str   = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
 OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
 
-# How many processed chunks to wait between voice-embedding refreshes.
-# At 4-second chunks, 8 chunks ≈ every ~32 seconds.
-VOICE_REFRESH_INTERVAL: int = 8
+# Microsoft neural male voice for English output.
+# Alternatives: en-US-GuyNeural, en-US-EricNeural, en-GB-RyanNeural
+TTS_VOICE: str = "en-US-ChristopherNeural"
 
-# Minimum number of speech tokens Whisper must find before we attempt TTS.
-# Protects against noisy/empty chunks producing garbled synthesis.
+# Minimum characters in transcript before attempting translation + TTS.
 MIN_TRANSCRIPT_CHARS: int = 4
 
 # ─── Sermon translation prompt ────────────────────────────────────────────────
@@ -123,32 +78,17 @@ Rules (follow precisely):
 # ─── Global state ─────────────────────────────────────────────────────────────
 
 whisper_model: Optional[WhisperModel] = None
-tts_model: Optional[TTS] = None  # Coqui XTTS v2
-
-# Cached XTTS v2 voice conditioning latents extracted from the preacher's audio.
-# Tuple of (gpt_cond_latent, speaker_embedding) tensors, or None until first capture.
-voice_latents: Optional[tuple] = None
-voice_lock = asyncio.Lock()          # protects voice_latents during update
-voice_chunks_processed: int = 0      # counter used to schedule periodic refreshes
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global whisper_model, tts_model
+    global whisper_model
 
-    # Load faster-whisper (GPU).
     logger.info("Loading faster-whisper large-v3 on GPU …")
     whisper_model = WhisperModel("large-v3", device="cuda", compute_type="float16")
     logger.info("Whisper ready.")
 
-    # Load XTTS v2 (GPU).  First run downloads ~1.9 GB of model weights to
-    # ~/.local/share/tts/ — subsequent starts load from the local cache.
-    logger.info("Loading XTTS v2 on GPU (may download ~1.9 GB on first run) …")
-    tts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cuda")
-    logger.info("XTTS v2 ready.")
-
-    # Verify Ollama is reachable before accepting traffic.
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{OLLAMA_URL}/api/tags")
@@ -160,6 +100,7 @@ async def lifespan(app: FastAPI):
             "Translation will fail until Ollama is running."
         )
 
+    logger.info(f"TTS voice: {TTS_VOICE}")
     yield
     logger.info("Worker shutting down.")
 
@@ -211,8 +152,8 @@ def convert_webm_to_wav(webm_bytes: bytes) -> str:
 
 def transcribe_audio(wav_path: str) -> tuple[str, str]:
     """
-    Transcribe with faster-whisper.  Language detection is always enabled —
-    the preacher may switch to English mid-sentence.
+    Transcribe with faster-whisper. Language detection always enabled —
+    the preacher may use English words mid-sentence.
     Returns (transcript_text, detected_language_code).
     """
     segments, info = whisper_model.transcribe(  # type: ignore[union-attr]
@@ -220,7 +161,6 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         beam_size=5,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
-        # No language= kwarg → auto-detect every chunk
     )
     text = " ".join(seg.text.strip() for seg in segments).strip()
     return text, info.language
@@ -230,13 +170,10 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
 
 async def translate_with_llm(text: str, detected_lang: str) -> str:
     """
-    Translate `text` to English using the local Ollama LLM.
-
-    If Whisper already detected English (the preacher said a few English words),
-    we skip the LLM call entirely and return the text as-is.
+    Translate to English via Ollama. Skips the call if already English.
     """
     if detected_lang == "en":
-        logger.info("Detected language is English — skipping translation.")
+        logger.info("Detected English — skipping translation.")
         return text
 
     payload = {
@@ -247,7 +184,7 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
         ],
         "stream": False,
         "options": {
-            "temperature": 0.2,   # low temperature → consistent, faithful translation
+            "temperature": 0.2,
             "num_predict": 512,
         },
     }
@@ -256,141 +193,22 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
         response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
         response.raise_for_status()
 
-    content: str = response.json()["message"]["content"].strip()
-    return content
+    return response.json()["message"]["content"].strip()
 
 
-# ─── Stage 4 – Voice embedding (blocking, thread executor) ───────────────────
-
-def extract_voice_latents_sync(wav_path: str) -> tuple:
-    """
-    Extract XTTS v2 conditioning latents (speaker identity) from a WAV file.
-    The reference audio should contain at least ~3 seconds of clean speech.
-    Returns (gpt_cond_latent, speaker_embedding).
-    """
-    xtts = tts_model.synthesizer.tts_model  # type: ignore[union-attr]
-    gpt_cond_latent, speaker_embedding = xtts.get_conditioning_latents(
-        audio_path=[wav_path],
-    )
-    return gpt_cond_latent, speaker_embedding
-
-
-async def maybe_update_voice(wav_path: str, has_speech: bool) -> None:
-    """
-    Update the cached voice latents from the current chunk's WAV.
-    Only fires when:
-      • We haven't captured a reference yet (first chunk with speech), OR
-      • The periodic refresh interval has been reached.
-    Runs the blocking extraction in a thread executor.
-    """
-    global voice_latents, voice_chunks_processed
-
-    if not has_speech:
-        return  # don't update from a silent chunk
-
-    should_update = (voice_latents is None) or (
-        voice_chunks_processed > 0
-        and voice_chunks_processed % VOICE_REFRESH_INTERVAL == 0
-    )
-
-    if not should_update:
-        return
-
-    logger.info(f"Updating voice embedding (chunk #{voice_chunks_processed}) …")
-    loop = asyncio.get_event_loop()
-    try:
-        latents = await loop.run_in_executor(
-            None, extract_voice_latents_sync, wav_path
-        )
-        async with voice_lock:
-            voice_latents = latents
-        logger.info("Voice embedding updated.")
-    except Exception as exc:
-        logger.error(f"Voice extraction failed: {exc}")
-
-
-# ─── Stage 5 – TTS synthesis (blocking, thread executor) ─────────────────────
-
-def synthesize_cloned_speech_sync(
-    text: str,
-    gpt_cond_latent,
-    speaker_embedding,
-) -> np.ndarray:
-    """
-    Run XTTS v2 inference with the cached speaker conditioning.
-    Returns a float32 numpy array at 24 000 Hz.
-    """
-    xtts = tts_model.synthesizer.tts_model  # type: ignore[union-attr]
-    outputs = xtts.inference(
-        text=text,
-        language="en",
-        gpt_cond_latent=gpt_cond_latent,
-        speaker_embedding=speaker_embedding,
-        temperature=0.7,
-        length_penalty=1.0,
-        repetition_penalty=10.0,
-        top_k=50,
-        top_p=0.85,
-        enable_text_splitting=True,   # handles long translated segments gracefully
-    )
-    return np.array(outputs["wav"], dtype=np.float32)
-
+# ─── Stage 4 – TTS synthesis (edge-tts, async) ───────────────────────────────
 
 async def synthesize_speech(text: str) -> bytes:
     """
-    Synthesise `text` in the preacher's cloned voice.
-    Waits briefly if the voice embedding has not been captured yet
-    (should only happen on the very first chunk).
-    Returns MP3 bytes ready to stream to listeners.
+    Synthesise `text` with the configured Microsoft neural male voice.
+    edge-tts streams MP3 chunks which are concatenated and returned.
     """
-    # Wait up to 10 s for the first voice embedding to be captured.
-    for _ in range(20):
-        async with voice_lock:
-            latents = voice_latents
-        if latents is not None:
-            break
-        logger.info("Waiting for first voice embedding …")
-        await asyncio.sleep(0.5)
-
-    if latents is None:
-        raise RuntimeError("No voice reference captured — cannot synthesise speech.")
-
-    gpt_cond_latent, speaker_embedding = latents
-    loop = asyncio.get_event_loop()
-
-    # Run blocking XTTS inference in a thread.
-    wav_array = await loop.run_in_executor(
-        None, synthesize_cloned_speech_sync, text, gpt_cond_latent, speaker_embedding
-    )
-
-    # Convert numpy WAV array → MP3 bytes via ffmpeg.
-    mp3_bytes = await loop.run_in_executor(None, wav_array_to_mp3, wav_array)
-    return mp3_bytes
-
-
-def wav_array_to_mp3(wav_array: np.ndarray, sample_rate: int = 24000) -> bytes:
-    """Write numpy audio array to a temp WAV file, encode to MP3 with ffmpeg."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        wav_path = f.name
-
-    sf.write(wav_path, wav_array, sample_rate)
-
-    mp3_path = wav_path.replace(".wav", ".mp3")
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-q:a", "2", mp3_path],
-        capture_output=True, timeout=60,
-    )
-    os.unlink(wav_path)
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg MP3 encode failed: {result.stderr.decode(errors='replace')}"
-        )
-
-    with open(mp3_path, "rb") as f:
-        mp3_bytes = f.read()
-    os.unlink(mp3_path)
-    return mp3_bytes
+    communicate = edge_tts.Communicate(text, TTS_VOICE)
+    audio = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio.extend(chunk["data"])
+    return bytes(audio)
 
 
 # ─── Full pipeline orchestration ──────────────────────────────────────────────
@@ -401,14 +219,9 @@ async def process_chunk(
     webm_bytes: bytes,
     send_lock: asyncio.Lock,
 ) -> None:
-    """
-    Execute the full pipeline for one audio chunk and send the result
-    frame back to the VPS relay.
-    """
-    global voice_chunks_processed
     loop = asyncio.get_event_loop()
 
-    # ── Stage 1: convert WebM → WAV ──────────────────────────────────────────
+    # Stage 1: WebM → WAV
     try:
         wav_path = await loop.run_in_executor(None, convert_webm_to_wav, webm_bytes)
     except Exception as exc:
@@ -417,7 +230,7 @@ async def process_chunk(
         return
 
     try:
-        # ── Stage 2: transcribe + language detect ─────────────────────────────
+        # Stage 2: transcribe
         try:
             text, detected_lang = await loop.run_in_executor(
                 None, transcribe_audio, wav_path
@@ -428,38 +241,21 @@ async def process_chunk(
             return
 
         has_speech = len(text) >= MIN_TRANSCRIPT_CHARS
-        logger.info(
-            f"[{chunk_id}] Transcript [{detected_lang}]: {text!r} "
-            f"(speech={'yes' if has_speech else 'no'})"
-        )
-
-        # Update voice embedding from this chunk (non-blocking background step).
-        # Runs concurrently with translation so it doesn't add to the critical path.
-        voice_update_task = asyncio.create_task(
-            maybe_update_voice(wav_path, has_speech)
-        )
+        logger.info(f"[{chunk_id}] Transcript [{detected_lang}]: {text!r} (speech={'yes' if has_speech else 'no'})")
 
         if not has_speech:
-            await voice_update_task
             return
 
-        voice_chunks_processed += 1
-
-        # ── Stage 3: translate (or pass through if already English) ───────────
+        # Stage 3: translate
         try:
             translated = await translate_with_llm(text, detected_lang)
             logger.info(f"[{chunk_id}] Translated: {translated!r}")
         except Exception as exc:
             logger.error(f"[{chunk_id}] Translation error: {exc}")
             await _send_error(websocket, send_lock, chunk_id, str(exc))
-            await voice_update_task
             return
 
-        # Wait for voice embedding update to finish before synthesis
-        # (only matters for the very first chunk).
-        await voice_update_task
-
-        # ── Stages 4-5: synthesise cloned speech ─────────────────────────────
+        # Stage 4: synthesise
         try:
             mp3_bytes = await synthesize_speech(translated)
         except Exception as exc:
@@ -467,7 +263,7 @@ async def process_chunk(
             await _send_error(websocket, send_lock, chunk_id, str(exc))
             return
 
-        # ── Send result frame to VPS relay ────────────────────────────────────
+        # Send result frame to VPS
         frame = pack_message(
             {
                 "type":          "result",
@@ -481,9 +277,7 @@ async def process_chunk(
         async with send_lock:
             await websocket.send_bytes(frame)
 
-        logger.info(
-            f"[{chunk_id}] Sent {len(mp3_bytes):,} bytes of MP3 audio to VPS."
-        )
+        logger.info(f"[{chunk_id}] Sent {len(mp3_bytes):,} bytes of MP3 to VPS.")
 
     finally:
         try:
@@ -498,10 +292,7 @@ async def _send_error(
     chunk_id: str,
     message: str,
 ) -> None:
-    frame = pack_message(
-        {"type": "error", "chunk_id": chunk_id, "message": message},
-        b"",
-    )
+    frame = pack_message({"type": "error", "chunk_id": chunk_id, "message": message}, b"")
     try:
         async with send_lock:
             await websocket.send_bytes(frame)
@@ -513,13 +304,6 @@ async def _send_error(
 
 @app.websocket("/ws/worker")
 async def ws_worker(websocket: WebSocket) -> None:
-    """
-    Accepts the single persistent WebSocket connection from the VPS relay.
-
-    An asyncio Queue serialises incoming chunks: the receive loop puts chunks
-    on the queue immediately so it never blocks, while a single worker task
-    drains the queue one chunk at a time through the full pipeline.
-    """
     await websocket.accept()
     logger.info(f"VPS relay connected from {websocket.client}.")
 
@@ -541,7 +325,6 @@ async def ws_worker(websocket: WebSocket) -> None:
     try:
         while True:
             raw: bytes = await websocket.receive_bytes()
-
             try:
                 meta, webm_bytes = unpack_message(raw)
             except Exception as exc:
@@ -549,22 +332,15 @@ async def ws_worker(websocket: WebSocket) -> None:
                 continue
 
             if meta.get("type") != "process":
-                logger.warning(f"Unexpected message type: {meta.get('type')!r}")
                 continue
 
-            chunk_id: str  = meta.get("chunk_id", "unknown")
-            active_langs   = meta.get("active_langs", [])
+            chunk_id   = meta.get("chunk_id", "unknown")
+            active_langs = meta.get("active_langs", [])
 
-            # This worker always produces English — only queue if "en" is active.
             if "en" not in active_langs:
-                logger.debug(f"[{chunk_id}] No English listeners — skipping.")
                 continue
 
-            logger.info(
-                f"Queued chunk [{chunk_id}], "
-                f"size={len(webm_bytes):,} bytes, "
-                f"queue depth={queue.qsize()}."
-            )
+            logger.info(f"Queued chunk [{chunk_id}], size={len(webm_bytes):,} bytes, queue depth={queue.qsize()}.")
             await queue.put((chunk_id, webm_bytes))
 
     except WebSocketDisconnect:
