@@ -53,6 +53,20 @@ TTS_RATE:  str = "+30%"
 
 MIN_TRANSCRIPT_CHARS: int = 4
 MIN_SPEECH_SECONDS:   float = 1.0
+MIN_LANG_PROBABILITY: float = 0.70  # skip chunk if language detection confidence is below this
+
+# Known Whisper hallucination phrases for silence/noise — skip these verbatim
+HALLUCINATION_PHRASES: set[str] = {
+    "редактор субтитров а.егорова",
+    "субтитры сделал дима",
+    "субтитры создавались при поддержке фонда",
+    "продолжение следует",
+    "субтитры",
+    "goodbye",
+    "thank you for watching",
+    "thanks for watching",
+    "you",
+}
 
 # ─── Sermon translation prompt ────────────────────────────────────────────────
 
@@ -170,7 +184,16 @@ def transcribe_audio(wav_path: str) -> tuple[str, str]:
         logger.info(f"Skipping chunk — only {speech_seconds:.2f}s of speech after VAD.")
         return "", info.language
 
+    if info.language_probability < MIN_LANG_PROBABILITY:
+        logger.info(f"Skipping chunk — low language confidence ({info.language_probability:.2f}).")
+        return "", info.language
+
     text = " ".join(seg.text.strip() for seg in segments).strip()
+
+    if text.lower().strip(".,!?…") in HALLUCINATION_PHRASES:
+        logger.info(f"Skipping chunk — known hallucination phrase: {text!r}")
+        return "", info.language
+
     if text:
         _last_transcript = ((_last_transcript + " " + text)[-300:]).strip()
     return text, info.language
