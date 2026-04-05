@@ -258,7 +258,18 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
     for src, tgt in _translation_history[-TRANSLATION_HISTORY_SIZE:]:
         messages.append({"role": "user",      "content": src})
         messages.append({"role": "assistant", "content": tgt})
-    messages.append({"role": "user", "content": text})
+
+    # If the chunk starts with ellipsis it's a mid-sentence continuation — tell the
+    # model exactly what the previous translation ended with so it can stitch naturally.
+    user_content = text
+    if text.startswith("...") and _translation_history:
+        prev_tail = _translation_history[-1][1][-80:].strip()
+        user_content = (
+            f"[The previous sentence ended with: «{prev_tail}»]\n"
+            f"Continue translating this fragment which completes that sentence:\n{text}"
+        )
+
+    messages.append({"role": "user", "content": user_content})
 
     payload = {
         "model": OLLAMA_MODEL,
