@@ -19,7 +19,7 @@ if [ -d "${CUDA_LIB}" ]; then
 fi
 
 PORT=8888
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:14b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 OLLAMA_LOG="/tmp/ollama-church.log"
 

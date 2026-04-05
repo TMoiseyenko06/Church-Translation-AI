@@ -46,7 +46,7 @@ logger = logging.getLogger("vast-worker")
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 OLLAMA_URL: str   = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
-OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 
 TTS_VOICE: str = "en-US-ChristopherNeural"
 TTS_RATE:  str = "+30%"
@@ -78,6 +78,10 @@ Guidelines:
 whisper_model: Optional[WhisperModel] = None
 _ollama_client: Optional[httpx.AsyncClient] = None
 _last_transcript: str = ""
+
+# Rolling translation history for multi-turn context: list of (source, translation) pairs
+_translation_history: list[tuple[str, str]] = []
+TRANSLATION_HISTORY_SIZE: int = 3  # how many previous pairs to include as context
 
 # ─── Application lifecycle ────────────────────────────────────────────────────
 
@@ -197,16 +201,22 @@ def _is_mostly_latin(text: str) -> bool:
 
 
 async def translate_with_llm(text: str, detected_lang: str) -> str:
+    global _translation_history
+
     if detected_lang == "en":
         logger.info("Detected English — skipping translation.")
         return text
 
+    # Build messages: system prompt + last N source→translation pairs as turns + current
+    messages: list[dict] = [{"role": "system", "content": TRANSLATION_SYSTEM_PROMPT}]
+    for src, tgt in _translation_history[-TRANSLATION_HISTORY_SIZE:]:
+        messages.append({"role": "user",      "content": src})
+        messages.append({"role": "assistant", "content": tgt})
+    messages.append({"role": "user", "content": text})
+
     payload = {
         "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
-            {"role": "user",   "content": text},
-        ],
+        "messages": messages,
         "stream": False,
         "options": {"temperature": 0.2, "num_predict": 200},
     }
@@ -216,11 +226,19 @@ async def translate_with_llm(text: str, detected_lang: str) -> str:
         response.raise_for_status()
         result = _strip_model_notes(response.json()["message"]["content"].strip())
         if _is_mostly_latin(result):
+            # Store this pair for future context
+            _translation_history.append((text, result))
+            if len(_translation_history) > TRANSLATION_HISTORY_SIZE + 2:
+                _translation_history = _translation_history[-TRANSLATION_HISTORY_SIZE:]
             return result
         logger.warning(f"Translation attempt {attempt+1} returned non-Latin text, retrying.")
         payload["options"]["temperature"] = 0.1
 
-    return result  # return last attempt even if imperfect
+    # Store even imperfect result so history stays continuous
+    _translation_history.append((text, result))
+    if len(_translation_history) > TRANSLATION_HISTORY_SIZE + 2:
+        _translation_history = _translation_history[-TRANSLATION_HISTORY_SIZE:]
+    return result
 
 
 # ─── Stage 4 – TTS ───────────────────────────────────────────────────────────
