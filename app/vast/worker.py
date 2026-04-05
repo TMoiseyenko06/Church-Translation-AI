@@ -92,6 +92,16 @@ Biblical & theological language:
   Мессия=Messiah, keep personal names transliterated (Пётр=Peter, \
   Иоанн=John, Мария=Mary, etc.).
 
+Continuity (important):
+- The conversation history above shows the previous chunks in order. \
+  Each new chunk is the direct continuation of the sermon — treat it \
+  as the next sentence(s) in the same speech, not a new topic.
+- Transition words like "and", "but", "so", "therefore", "because", \
+  "for" at the start of a chunk are intentional — the preacher's sentence \
+  began in the previous chunk. Keep them; do not rewrite them as sentence starters.
+- Maintain consistent vocabulary and proper nouns across chunks \
+  (e.g. if "Savior" was used before, do not switch to "Redeemer").
+
 Style:
 - Pastoral, reverent, natural spoken English — not overly formal or wooden.
 - Preserve the preacher's rhetorical emphasis and repetition.
